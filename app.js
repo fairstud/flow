@@ -1,12 +1,17 @@
 const SUPABASE_URL = 'https://cdvxlzjroubzzfxzrhmp.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_FcDPxHEqaBJ1jLi_rB8o0A_upxm2XZv';
 
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  }
+});
 
 let currentUser = null;
 let currentProfile = null;
 let realtimeSub = null;
-let pickerTarget = null;
 let replyTargetPostId = null;
 let quoteTargetPost = null;
 
@@ -62,73 +67,13 @@ function setBtn(btn, loading, text) {
   btn.textContent = loading ? '…' : text;
 }
 
-async function init() {
+function init() {
   setupAuth();
   setupCompose();
   setupReplyModal();
   setupQuoteModal();
-  setupReactionPicker();
-  document.addEventListener('click', closePickerOnOutside);
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeAllModals(); closeReactionPicker(); }
-  });
-  window.addEventListener('hashchange', () => { if (currentUser) route(); });
-
-  const { data: { session } } = await sb.auth.getSession();
-  if (session) {
-    currentUser = session.user;
-    await ensureProfile();
-    enterApp();
-  } else {
-    showAuthPage();
-  }
-
-  sb.auth.onAuthStateChange(async (event, session) => {
-    if (event === 'SIGNED_IN') {
-      currentUser = session.user;
-      await ensureProfile();
-      enterApp();
-    } else if (event === 'SIGNED_OUT') {
-      currentUser = null; currentProfile = null;
-      if (realtimeSub) { realtimeSub.unsubscribe(); realtimeSub = null; }
-      showAuthPage();
-    }
-  });
-}
-
-async function ensureProfile() {
-  let { data } = await sb.from('profiles').select('*').eq('id', currentUser.id).single();
-  if (!data) {
-    const base = (currentUser.user_metadata?.username || currentUser.email.split('@')[0])
-      .toLowerCase().replace(/[^a-z0-9_]/g,'').slice(0, 20) || 'user';
-    let uname = base;
-    let tries = 0;
-    while (true) {
-      const { data: ex } = await sb.from('profiles').select('id').eq('username', uname).maybeSingle();
-      if (!ex) break;
-      tries++;
-      uname = base + tries;
-    }
-    await sb.from('profiles').upsert({ id: currentUser.id, username: uname }, { onConflict: 'id' });
-    ({ data } = await sb.from('profiles').select('*').eq('id', currentUser.id).single());
-  }
-  currentProfile = data;
-}
-
-function showAuthPage() {
-  qs('#page-auth').classList.remove('hidden');
-  qs('#page-app').classList.add('hidden');
-}
-
-function enterApp() {
-  qs('#page-auth').classList.add('hidden');
-  qs('#page-app').classList.remove('hidden');
-  setComposeAvatar();
-  if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/feed';
-  route();
-  loadNotifCount();
-  loadRightPanel();
-  subscribeRealtime();
+  window.addEventListener('hashchange', () => route());
+  initApp();
 }
 
 function route() {
@@ -153,14 +98,24 @@ function route() {
 
   if (page === 'feed') { qs('#view-feed').classList.remove('hidden'); renderFeed(); }
   else if (page === 'explore') { qs('#view-explore').classList.remove('hidden'); renderExplore(sub); }
-  else if (page === 'notifications') { qs('#view-notifications').classList.remove('hidden'); renderNotifications(); }
-  else if (page === 'bookmarks') { qs('#view-bookmarks').classList.remove('hidden'); renderBookmarks(); }
+  else if (page === 'notifications') {
+    if (!requireAuth()) return;
+    qs('#view-notifications').classList.remove('hidden'); renderNotifications();
+  }
+  else if (page === 'bookmarks') {
+    if (!requireAuth()) return;
+    qs('#view-bookmarks').classList.remove('hidden'); renderBookmarks();
+  }
   else if (page === 'profile') {
+    if (!sub && !currentUser) { requireAuth(); return; }
     qs('#view-profile').classList.remove('hidden');
     renderProfile(sub || currentProfile?.username);
   }
   else if (page === 'post') { qs('#view-post').classList.remove('hidden'); renderPostDetail(sub); }
-  else if (page === 'settings') { qs('#view-settings').classList.remove('hidden'); renderSettings(); }
+  else if (page === 'settings') {
+    if (!requireAuth()) return;
+    qs('#view-settings').classList.remove('hidden'); renderSettings();
+  }
   else location.hash = '#/feed';
 }
 
@@ -174,17 +129,31 @@ function setupAuth() {
 
   let usernameDebounce;
   qs('#reg-username').addEventListener('input', function() {
-    const val = this.value.toLowerCase().replace(/[^a-z0-9_]/g, '');
-    this.value = val;
+    const currentVal = this.value;
+    const filteredVal = currentVal.toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (currentVal !== filteredVal) this.value = filteredVal;
     const hint = qs('#username-hint');
     clearTimeout(usernameDebounce);
-    if (val.length < 3) { hint.textContent = val.length ? 'Too short (min 3 chars)' : ''; hint.style.color = 'var(--red)'; return; }
-    hint.textContent = 'Checking…'; hint.style.color = 'var(--muted2)';
+    if (filteredVal.length < 3) {
+      hint.textContent = filteredVal.length ? 'Too short (min 3 chars)' : '';
+      hint.style.color = 'var(--red)';
+      return;
+    }
+    hint.textContent = 'Checking…';
+    hint.style.color = 'var(--muted2)';
     usernameDebounce = setTimeout(async () => {
-      const { data } = await sb.from('profiles').select('id').eq('username', val).maybeSingle();
-      if (data) { hint.textContent = 'Already taken'; hint.style.color = 'var(--red)'; }
-      else { hint.textContent = 'Available ✓'; hint.style.color = 'var(--green)'; }
-    }, 450);
+      if (qs('#reg-username').value !== filteredVal) return;
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 3000);
+        const { data, error } = await sb.from('profiles').select('id').eq('username', filteredVal).maybeSingle().abortSignal(controller.signal);
+        clearTimeout(t);
+        if (qs('#reg-username').value !== filteredVal) return;
+        if (error || data === undefined) { hint.textContent = ''; return; }
+        hint.textContent = data ? 'Already taken' : 'Available ✓';
+        hint.style.color = data ? 'var(--red)' : 'var(--green)';
+      } catch { hint.textContent = ''; }
+    }, 500);
   });
 
   qs('#login-form').addEventListener('submit', async e => {
@@ -194,27 +163,39 @@ function setupAuth() {
     const errEl = qs('#login-error');
     const btn   = qs('#login-submit');
     errEl.textContent = ''; errEl.className = 'form-msg';
+    if (!email || !pass) { errEl.textContent = 'Enter email and password.'; errEl.className = 'form-msg error'; return; }
     setBtn(btn, true, 'Sign in');
-    const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+    const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
     setBtn(btn, false, 'Sign in');
-    if (error) { errEl.textContent = error.message; errEl.className = 'form-msg error'; }
+    if (error) {
+      errEl.textContent = error.message;
+      errEl.className = 'form-msg error';
+    } else if (data?.session) {
+      currentUser = data.session.user;
+      await ensureProfile();
+      updateAuthUI();
+      setComposeAvatar();
+      qs('#page-auth').classList.add('hidden');
+      qs('#page-app').classList.remove('hidden');
+      if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/feed';
+      route();
+      loadNotifCount();
+      loadRightPanel();
+      subscribeRealtime();
+    }
   });
 
   qs('#register-form').addEventListener('submit', async e => {
     e.preventDefault();
-    const username = qs('#reg-username').value.trim();
+    const username = qs('#reg-username').value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
     const email    = qs('#reg-email').value.trim();
     const pass     = qs('#reg-password').value;
     const errEl    = qs('#reg-error');
     const btn      = qs('#reg-submit');
     errEl.textContent = ''; errEl.className = 'form-msg';
-
     if (!username || username.length < 3) { errEl.textContent = 'Username must be 3+ characters.'; errEl.className = 'form-msg error'; return; }
+    if (!email) { errEl.textContent = 'Email is required.'; errEl.className = 'form-msg error'; return; }
     if (pass.length < 8) { errEl.textContent = 'Password must be 8+ characters.'; errEl.className = 'form-msg error'; return; }
-
-    const { data: ex } = await sb.from('profiles').select('id').eq('username', username).maybeSingle();
-    if (ex) { errEl.textContent = 'Username already taken.'; errEl.className = 'form-msg error'; return; }
-
     setBtn(btn, true, 'Create account');
     const { error } = await sb.auth.signUp({ email, password: pass, options: { data: { username } } });
     setBtn(btn, false, 'Create account');
@@ -222,9 +203,18 @@ function setupAuth() {
     else { errEl.textContent = 'Check your email to confirm, then sign in!'; errEl.className = 'form-msg success'; }
   });
 
-  qs('#logout-btn').addEventListener('click', () => sb.auth.signOut());
+  qs('#logout-btn').addEventListener('click', () => {
+    showConfirmModal({
+      title: 'Sign out',
+      message: 'Are you sure you want to sign out of your account?',
+      confirmText: 'Sign out',
+      confirmClass: 'btn-danger',
+      onConfirm: () => sb.auth.signOut()
+    });
+  });
+  qs('#new-post-btn').addEventListener('click', () => { if (!requireAuth()) return; qs('#compose-modal').classList.add('open'); setComposeAvatar(); });
   qs('#back-btn').addEventListener('click', () => history.back());
-  qs('#notif-btn').addEventListener('click', () => { location.hash = '#/notifications'; });
+  qs('#notif-btn').addEventListener('click', () => { if (!requireAuth()) return; location.hash = '#/notifications'; });
 }
 
 async function renderFeed() {
@@ -265,6 +255,7 @@ async function loadFeedPosts(tab) {
     .limit(40);
 
   if (tab === 'following') {
+    if (!currentUser) { list.innerHTML = emptyState('Sign in to see posts from people you follow.'); return; }
     const { data: follows } = await sb.from('follows').select('following_id').eq('follower_id', currentUser.id);
     const ids = (follows || []).map(f => f.following_id);
     if (!ids.length) { list.innerHTML = emptyState('Follow people to see their posts here.'); return; }
@@ -290,11 +281,11 @@ function postCardHTML(post, quotedPost = null) {
   const p = post.profiles;
   const likeCount  = (post.reactions || []).filter(r => r.type === 'like').length;
   const reacts     = (post.reactions || []).reduce((acc, r) => { acc[r.type] = (acc[r.type]||0)+1; return acc; }, {});
-  const userLiked  = (post.reactions || []).some(r => r.type === 'like' && r.user_id === currentUser.id);
+  const userLiked  = currentUser ? (post.reactions || []).some(r => r.type === 'like' && r.user_id === currentUser.id) : false;
   const repostCount = (post.reposts || []).length;
-  const userReposted = (post.reposts || []).some(r => r.user_id === currentUser.id);
-  const userBookmarked = (post.bookmarks || []).some(b => b.user_id === currentUser.id);
-  const isOwn = post.user_id === currentUser.id;
+  const userReposted = currentUser ? (post.reposts || []).some(r => r.user_id === currentUser.id) : false;
+  const userBookmarked = currentUser ? (post.bookmarks || []).some(b => b.user_id === currentUser.id) : false;
+  const isOwn = currentUser ? post.user_id === currentUser.id : false;
 
   let mediaHtml = '';
   if (post.post_type === 'image' && post.media_url) {
@@ -318,7 +309,7 @@ function postCardHTML(post, quotedPost = null) {
       <div class="quote-text">${esc((quotedPost.content||'').slice(0,120))}${quotedPost.content?.length > 120 ? '…' : ''}</div>
     </div>` : '';
 
-  const topReacts = Object.entries(reacts).filter(([,v])=>v>0).slice(0,3).map(([t])=>({like:'❤️',fire:'🔥',clap:'👏',laugh:'😂',wow:'😮'})[t]||'').join('');
+  const topReacts = Object.entries(reacts).filter(([,v])=>v>0).slice(0,3).map(([t])=>({like:''})[t]||'').join('');
 
   return `
     <article class="post-card" data-post-id="${post.id}">
@@ -367,21 +358,20 @@ function postCardHTML(post, quotedPost = null) {
 
 function bindPostActions(ctx) {
   qsa('.like-btn', ctx).forEach(btn => {
-    btn.addEventListener('contextmenu', e => { e.preventDefault(); showReactionPicker(btn, btn.dataset.postId); });
-    btn.addEventListener('click', () => toggleLike(btn.dataset.postId, btn));
+    btn.addEventListener('click', () => { if (!requireAuth()) return; toggleLike(btn.dataset.postId, btn); });
   });
-  qsa('.repost-btn', ctx).forEach(btn => btn.addEventListener('click', () => toggleRepost(btn.dataset.postId, btn)));
-  qsa('.bookmark-btn', ctx).forEach(btn => btn.addEventListener('click', () => toggleBookmark(btn.dataset.postId, btn)));
+  qsa('.repost-btn', ctx).forEach(btn => btn.addEventListener('click', () => { if (!requireAuth()) return; toggleRepost(btn.dataset.postId, btn); }));
+  qsa('.bookmark-btn', ctx).forEach(btn => btn.addEventListener('click', () => { if (!requireAuth()) return; toggleBookmark(btn.dataset.postId, btn); }));
   qsa('.share-btn', ctx).forEach(btn => btn.addEventListener('click', () => copyLink(btn.dataset.postId)));
-  qsa('.reply-btn', ctx).forEach(btn => btn.addEventListener('click', () => openReplyModal(btn.dataset.postId)));
-  qsa('.quote-btn', ctx).forEach(btn => btn.addEventListener('click', () => openQuoteModal(btn.dataset.postId)));
+  qsa('.reply-btn', ctx).forEach(btn => btn.addEventListener('click', () => { if (!requireAuth()) return; openReplyModal(btn.dataset.postId); }));
+  qsa('.quote-btn', ctx).forEach(btn => btn.addEventListener('click', () => { if (!requireAuth()) return; openQuoteModal(btn.dataset.postId); }));
   qsa('.delete-btn', ctx).forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); deletePost(btn.dataset.postId, btn); }));
   qsa('[data-goto]', ctx).forEach(el => el.addEventListener('click', () => { location.hash = el.dataset.goto; }));
   qsa('.post-username', ctx).forEach(el => {
     el.addEventListener('click', e => { e.preventDefault(); location.hash = el.href.split('#')[1] || `#/profile/${el.textContent.replace('@','')}` ; });
   });
   qsa('.post-img', ctx).forEach(img => img.addEventListener('click', () => window.open(img.src, '_blank')));
-  qsa('.poll-bar-wrap', ctx).forEach(bar => bar.addEventListener('click', () => votePoll(bar.dataset.optionId, bar.closest('.post-card').dataset.postId)));
+  qsa('.poll-bar-wrap', ctx).forEach(bar => bar.addEventListener('click', () => { if (!requireAuth()) return; votePoll(bar.dataset.optionId, bar.closest('.post-card').dataset.postId); }));
 }
 
 async function toggleLike(postId, btn) {
@@ -443,7 +433,7 @@ async function sendNotification(postId, type) {
 }
 
 function subscribeRealtime() {
-  if (realtimeSub) return;
+  if (!currentUser || realtimeSub) return;
   realtimeSub = sb.channel('rt-posts')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, () => {
       const h = location.hash.replace(/^#\/?/,'');
@@ -459,6 +449,7 @@ function subscribeRealtime() {
 }
 
 async function loadNotifCount() {
+  if (!currentUser) return;
   const { count } = await sb.from('notifications').select('*', { count: 'exact', head: true }).eq('user_id', currentUser.id).eq('read', false);
   const badge = qs('#notif-badge');
   const sbadge = qs('#sidebar-notif-badge');
@@ -509,13 +500,17 @@ async function renderExplore(sub) {
 }
 
 async function searchUsers(q, el) {
-  let req = sb.from('profiles').select('id, username, avatar_url, bio').neq('id', currentUser.id).limit(30);
+  let req = sb.from('profiles').select('id, username, avatar_url, bio').limit(30);
+  if (currentUser) req = req.neq('id', currentUser.id);
   if (q) req = req.ilike('username', `%${q}%`);
   else req = req.order('created_at', { ascending: false });
 
   const { data: users } = await req;
-  const { data: myFollows } = await sb.from('follows').select('following_id').eq('follower_id', currentUser.id);
-  const fset = new Set((myFollows||[]).map(f=>f.following_id));
+  const fset = new Set();
+  if (currentUser) {
+    const { data: myFollows } = await sb.from('follows').select('following_id').eq('follower_id', currentUser.id);
+    (myFollows||[]).forEach(f => fset.add(f.following_id));
+  }
 
   if (!users?.length) { el.innerHTML = emptyState('No users found.'); return; }
 
@@ -533,7 +528,7 @@ async function searchUsers(q, el) {
     if (e.target.closest('.btn-follow')) return;
     location.hash = `#/profile/${r.dataset.username}`;
   }));
-  qsa('.btn-follow', el).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); toggleFollow(b.dataset.uid, b); }));
+  qsa('.btn-follow', el).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); if (!requireAuth()) return; toggleFollow(b.dataset.uid, b); }));
 }
 
 async function searchPosts(q, el) {
@@ -583,7 +578,6 @@ async function renderNotifications() {
   const list = qs('#notif-list');
   if (!data?.length) { list.innerHTML = emptyState('No notifications yet.'); return; }
 
-  const icons = { like: '❤️', fire: '🔥', follow: '👋', repost: '🔁', comment: '💬', mention: '@' };
   const msgs  = { like: 'liked your post', fire: 'reacted to your post', follow: 'followed you', repost: 'reposted your post', comment: 'replied to your post', mention: 'mentioned you' };
 
   list.innerHTML = data.map(n => `
@@ -629,22 +623,25 @@ async function renderProfile(username) {
   const { data: profile, error } = await sb.from('profiles').select('*').eq('username', username).single();
   if (error || !profile) { view.innerHTML = emptyState('User not found.'); return; }
 
-  const isOwn = profile.id === currentUser.id;
+  const isOwn = currentUser ? profile.id === currentUser.id : false;
 
   const [{ count: fc }, { count: fg }, { data: posts }, followCheck] = await Promise.all([
     sb.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', profile.id),
     sb.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', profile.id),
     sb.from('posts').select('id, content, post_type, media_url, created_at, user_id, profiles(id, username, avatar_url), reactions(id, user_id, type), reposts(id, user_id), bookmarks(id, user_id)').eq('user_id', profile.id).is('reply_to', null).order('created_at', { ascending: false }).limit(30),
-    isOwn ? null : sb.from('follows').select('follower_id').eq('follower_id', currentUser.id).eq('following_id', profile.id).maybeSingle()
+    (isOwn || !currentUser) ? null : sb.from('follows').select('follower_id').eq('follower_id', currentUser.id).eq('following_id', profile.id).maybeSingle()
   ]);
 
   const isFollowing = !isOwn && !!followCheck?.data;
   const joinDate = new Date(profile.created_at).toLocaleDateString('en', { month: 'long', year: 'numeric' });
 
   view.innerHTML = `
-    <div class="profile-cover">
+    <div class="profile-cover" id="profile-cover-el" style="${profile.cover_url ? `background-image:url('${esc(profile.cover_url)}');background-size:cover;background-position:center` : ''}">
       ${isOwn ? `<div class="profile-cover-actions">
-        <button class="btn-sm btn-outline" id="change-cover-btn" style="background:rgba(0,0,0,.5);border-color:rgba(255,255,255,.2);color:#fff;font-size:.75rem;padding:4px 10px">Edit cover</button>
+        <label class="btn-sm btn-outline" id="change-cover-btn" style="background:rgba(0,0,0,.5);border-color:rgba(255,255,255,.2);color:#fff;font-size:.75rem;padding:4px 10px;cursor:pointer">
+          Edit cover
+          <input type="file" id="cover-upload" accept="image/*" hidden />
+        </label>
       </div>` : ''}
     </div>
     <div class="profile-hero">
@@ -657,7 +654,7 @@ async function renderProfile(username) {
           </label>` : ''}
         </div>
         <div style="margin-left:auto;display:flex;gap:8px;align-items:flex-start;padding-top:8px">
-          ${isOwn
+        ${isOwn
             ? `<button class="btn-sm btn-outline" id="edit-profile-btn">Edit profile</button>`
             : `<button class="btn-follow ${isFollowing?'following':''}" id="profile-follow-btn" data-uid="${profile.id}">${isFollowing?'Following':'Follow'}</button>`}
         </div>
@@ -701,9 +698,11 @@ async function renderProfile(username) {
   if (isOwn) {
     qs('#edit-profile-btn').addEventListener('click', () => renderProfileEditForm(profile));
     qs('#avatar-upload')?.addEventListener('change', e => uploadAvatar(e.target.files[0], profile));
+    qs('#cover-upload')?.addEventListener('change', e => uploadCover(e.target.files[0], profile));
   } else {
     const fb = qs('#profile-follow-btn');
     if (fb) fb.addEventListener('click', async () => {
+      if (!requireAuth()) return;
       await toggleFollow(profile.id, fb);
       const sn = qs('#follower-stat .stat-num');
       if (sn) sn.textContent = parseInt(sn.textContent) + (fb.classList.contains('following') ? 1 : -1);
@@ -809,14 +808,28 @@ async function uploadAvatar(file, profile) {
   if (!file) return;
   showToast('Uploading…');
   const ext  = file.name.split('.').pop().toLowerCase();
-  const path = `avatars/${currentUser.id}/avatar.${ext}`;
-  const { error: upErr } = await sb.storage.from('post-images').upload(path, file, { cacheControl: '3600', upsert: true });
+  const path = `${currentUser.id}/avatar.${ext}`;
+  const { error: upErr } = await sb.storage.from('avatars').upload(path, file, { cacheControl: '3600', upsert: true });
   if (upErr) { showToast('Upload failed: ' + upErr.message, 'error'); return; }
-  const { data: { publicUrl } } = sb.storage.from('post-images').getPublicUrl(path);
+  const { data: { publicUrl } } = sb.storage.from('avatars').getPublicUrl(path);
   await sb.from('profiles').update({ avatar_url: publicUrl }).eq('id', currentUser.id);
   currentProfile.avatar_url = publicUrl;
   setComposeAvatar();
   showToast('Avatar updated!');
+  renderProfile(profile.username);
+}
+
+async function uploadCover(file, profile) {
+  if (!file) return;
+  showToast('Uploading cover…');
+  const ext  = file.name.split('.').pop().toLowerCase();
+  const path = `${currentUser.id}/cover.${ext}`;
+  const { error: upErr } = await sb.storage.from('avatars').upload(path, file, { cacheControl: '3600', upsert: true });
+  if (upErr) { showToast('Cover upload failed: ' + upErr.message, 'error'); return; }
+  const { data: { publicUrl } } = sb.storage.from('avatars').getPublicUrl(path);
+  await sb.from('profiles').update({ cover_url: publicUrl }).eq('id', currentUser.id);
+  currentProfile.cover_url = publicUrl;
+  showToast('Cover updated!');
   renderProfile(profile.username);
 }
 
@@ -841,7 +854,7 @@ async function renderPostDetail(postId) {
             <div class="reply-meta">
               <a href="#/profile/${esc(r.profiles?.username)}" class="reply-username">@${esc(r.profiles?.username)}</a>
               <span class="reply-time">${timeAgo(r.created_at)}</span>
-              ${r.user_id === currentUser.id ? `<button class="reply-delete" data-cid="${r.id}">Delete</button>` : ''}
+              ${(currentUser && r.user_id === currentUser.id) ? `<button class="reply-delete" data-cid="${r.id}">Delete</button>` : ''}
             </div>
             <div class="reply-text">${esc(r.content)}</div>
           </div>
@@ -851,7 +864,7 @@ async function renderPostDetail(postId) {
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end">
       ${avatarEl(currentProfile,'size-sm')}
       <form id="inline-reply-form" style="flex:1;display:flex;gap:8px;align-items:flex-end">
-        <textarea id="inline-reply-text" class="field-input" rows="1" placeholder="Reply…" maxlength="500" style="resize:none;flex:1;padding:8px 10px"></textarea>
+        <textarea id="inline-reply-text" class="field-input" rows="1" placeholder="${currentUser ? 'Reply…' : 'Sign in to reply…'}" maxlength="500" style="resize:none;flex:1;padding:8px 10px" ${!currentUser ? 'readonly' : ''}></textarea>
         <button type="submit" class="btn-post" style="flex-shrink:0">Reply</button>
       </form>
     </div>`;
@@ -864,6 +877,7 @@ async function renderPostDetail(postId) {
 
   qs('#inline-reply-form').addEventListener('submit', async e => {
     e.preventDefault();
+    if (!requireAuth()) return;
     const text = qs('#inline-reply-text').value.trim();
     if (!text) return;
     const btn = e.target.querySelector('button');
@@ -877,6 +891,7 @@ async function renderPostDetail(postId) {
 }
 
 async function renderSettings() {
+  if (!requireAuth()) return;
   const view = qs('#view-settings');
   if (!currentProfile) await ensureProfile();
 
@@ -974,7 +989,15 @@ async function renderSettings() {
       </div>
     </div>`;
 
-  qs('#settings-logout-btn').addEventListener('click', () => sb.auth.signOut());
+  qs('#settings-logout-btn').addEventListener('click', () => {
+    showConfirmModal({
+      title: 'Sign out',
+      message: 'Are you sure you want to sign out of your account?',
+      confirmText: 'Sign out',
+      confirmClass: 'btn-danger',
+      onConfirm: () => sb.auth.signOut()
+    });
+  });
 
   qs('#change-username-btn')?.addEventListener('click', () => {
     const area = qs('#change-username-area');
@@ -1028,11 +1051,20 @@ async function renderSettings() {
     });
   });
 
-  qs('#delete-account-btn').addEventListener('click', async () => {
-    if (!confirm('Are you sure? This cannot be undone.')) return;
-    if (!confirm('Delete ALL posts, follows, and account data?')) return;
-    await sb.from('profiles').delete().eq('id', currentUser.id);
-    await sb.auth.signOut();
+  qs('#delete-account-btn').addEventListener('click', () => {
+    showConfirmModal({
+      title: 'Delete account',
+      message: 'This will <strong style="color:var(--red)">permanently delete</strong> your account, all posts, followers and data. This action <strong>cannot be undone</strong>.',
+      confirmText: 'Delete my account',
+      confirmClass: 'btn-danger',
+      danger: true,
+      requireType: 'DELETE',
+      onConfirm: async () => {
+        showToast('Deleting account…');
+        await sb.from('profiles').delete().eq('id', currentUser.id);
+        await sb.auth.signOut();
+      }
+    });
   });
 }
 
@@ -1062,10 +1094,9 @@ function setupCompose() {
   const modal = qs('#compose-modal');
   let activeType = 'text';
 
-  const openModal = () => { modal.classList.add('open'); setComposeAvatar(); };
+  const openModal = () => { if (!requireAuth()) return; modal.classList.add('open'); setComposeAvatar(); };
   const closeModal = () => { modal.classList.remove('open'); resetCompose(); };
 
-  qs('#new-post-btn').addEventListener('click', openModal);
   qs('#bnav-compose-btn').addEventListener('click', openModal);
   qs('#modal-scrim').addEventListener('click', closeModal);
   qs('#modal-close-btn').addEventListener('click', closeModal);
@@ -1325,40 +1356,6 @@ async function openQuoteModal(postId) {
   qs('#quote-text').focus();
 }
 
-function setupReactionPicker() {
-  qsa('.rpick-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (!pickerTarget) return;
-      const { postId, btn: likeBtn } = pickerTarget;
-      await sb.from('reactions').upsert({ post_id: postId, user_id: currentUser.id, type: btn.dataset.type }, { onConflict: 'post_id,user_id,type' });
-      if (btn.dataset.type === 'like') {
-        likeBtn.classList.add('liked');
-        likeBtn.querySelector('svg').setAttribute('fill', 'currentColor');
-      }
-      showToast(`Reacted with ${btn.textContent}`);
-      closeReactionPicker();
-    });
-  });
-}
-
-function showReactionPicker(likeBtn, postId) {
-  const picker = qs('#reaction-picker');
-  const rect = likeBtn.getBoundingClientRect();
-  picker.style.bottom = `${window.innerHeight - rect.top + 8}px`;
-  picker.style.left = `${rect.left}px`;
-  picker.classList.remove('hidden');
-  pickerTarget = { postId, btn: likeBtn };
-}
-
-function closeReactionPicker() {
-  qs('#reaction-picker').classList.add('hidden');
-  pickerTarget = null;
-}
-
-function closePickerOnOutside(e) {
-  if (!e.target.closest('#reaction-picker') && !e.target.closest('.like-btn')) closeReactionPicker();
-}
-
 function closeAllModals() {
   qsa('.modal').forEach(m => m.classList.remove('open'));
 }
@@ -1413,6 +1410,7 @@ async function loadTrending() {
 async function loadSuggestions() {
   const el = qs('#suggest-list');
   if (!el) return;
+  if (!currentUser) { el.innerHTML = '<p style="font-size:.8rem;color:var(--muted2)">Sign in to see suggestions.</p>'; return; }
   const { data: follows } = await sb.from('follows').select('following_id').eq('follower_id', currentUser.id);
   const fids = new Set((follows||[]).map(f=>f.following_id));
   fids.add(currentUser.id);
@@ -1436,6 +1434,188 @@ function emptyState(msg) {
     <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
     <p>${esc(msg)}</p>
   </div>`;
+}
+
+function hideLoader() {
+    const loader = document.getElementById('app-loader');
+    if (loader) {
+        loader.style.opacity = '0';
+        loader.style.pointerEvents = 'none';
+        setTimeout(() => { if (loader.parentNode) loader.remove(); }, 500);
+    }
+}
+
+function setupNotifications() {
+    if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
+    }
+}
+
+async function initApp() {
+  // Show UI shell immediately (no route yet — currentUser unknown)
+  qs('#page-auth').classList.add('hidden');
+  qs('#page-app').classList.remove('hidden');
+
+  // Get session BEFORE calling route() so requireAuth() has currentUser
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) {
+      currentUser = session.user;
+      await ensureProfile();
+    }
+  } catch (e) {
+    currentUser = null;
+  }
+
+  // Now route() knows about currentUser
+  updateAuthUI();
+  setComposeAvatar();
+  if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/feed';
+  route();
+  hideLoader();
+
+  if (currentUser) {
+    loadNotifCount();
+    loadRightPanel();
+    subscribeRealtime();
+  }
+
+  sb.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_IN') {
+      if (currentUser?.id === session?.user?.id) return;
+      currentUser = session.user;
+      await ensureProfile();
+      updateAuthUI();
+      setComposeAvatar();
+      qs('#page-auth').classList.add('hidden');
+      qs('#page-app').classList.remove('hidden');
+      if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/feed';
+      route();
+      loadNotifCount();
+      loadRightPanel();
+      subscribeRealtime();
+    } else if (event === 'TOKEN_REFRESHED') {
+      if (session) currentUser = session.user;
+    } else if (event === 'SIGNED_OUT') {
+      currentUser = null;
+      currentProfile = null;
+      if (realtimeSub) { realtimeSub.unsubscribe(); realtimeSub = null; }
+      updateAuthUI();
+      setComposeAvatar();
+      location.hash = '#/feed';
+      route();
+    }
+  });
+}
+async function ensureProfile() {
+  if (!currentUser) return;
+  try {
+    let { data, error } = await sb.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      let base = (currentUser.user_metadata?.username || currentUser.email.split('@')[0]).toLowerCase().replace(/[^a-z0-9_]/g,'');
+      let uname = base;
+      let tries = 0;
+      while (tries < 10) {
+        const { data: ex } = await sb.from('profiles').select('id').eq('username', uname).maybeSingle();
+        if (!ex) break;
+        tries++;
+        uname = base + tries;
+      }
+      await sb.from('profiles').upsert({ id: currentUser.id, username: uname });
+      const { data: fresh } = await sb.from('profiles').select('*').eq('id', currentUser.id).single();
+      data = fresh;
+    }
+    currentProfile = data;
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function enterApp() {
+  qs('#page-auth').classList.add('hidden');
+  qs('#page-app').classList.remove('hidden');
+  if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/feed';
+}
+
+function showAuthPage() {
+  qs('#page-auth').classList.remove('hidden');
+  qs('#page-app').classList.add('hidden');
+}
+
+function requireAuth() {
+  if (!currentUser) {
+    showAuthPage();
+    return false;
+  }
+  return true;
+}
+
+function updateAuthUI() {
+  const container = qs('#nav-auth-container');
+  if (!container) return;
+  if (!currentUser) {
+    container.innerHTML = `
+      <div class="guest-card">
+        <h3>New to Flow?</h3>
+        <p>Sign up now to get your own personalized timeline!</p>
+        <button class="btn-primary" onclick="showAuthPage()">Sign In / Sign Up</button>
+      </div>`;
+  } else {
+    container.innerHTML = '';
+  }
+  const logoutBtn = qs('#logout-btn');
+  if (logoutBtn) logoutBtn.style.display = 'none';
+}
+
+
+function showConfirmModal({ title, message, confirmText = 'Confirm', confirmClass = 'btn-danger', onConfirm, danger = false, requireType = null }) {
+  const existing = qs('#custom-confirm-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'custom-confirm-modal';
+  modal.innerHTML = `
+    <div class="custom-modal-scrim"></div>
+    <div class="custom-modal-box">
+      <div class="custom-modal-icon ${danger ? 'danger' : ''}">
+        ${danger
+          ? `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`
+          : `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`
+        }
+      </div>
+      <h3 class="custom-modal-title">${esc(title)}</h3>
+      <p class="custom-modal-msg">${message}</p>
+      ${requireType ? `
+        <p class="custom-modal-type-hint">Type <strong>${esc(requireType)}</strong> to confirm:</p>
+        <input class="field-input custom-modal-type-input" id="confirm-type-input" type="text" placeholder="${esc(requireType)}" autocomplete="off" />
+      ` : ''}
+      <div class="custom-modal-actions">
+        <button class="btn-sm btn-outline" id="confirm-cancel-btn">Cancel</button>
+        <button class="btn-sm ${confirmClass}" id="confirm-ok-btn" ${requireType ? 'disabled' : ''}>${esc(confirmText)}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  requestAnimationFrame(() => modal.classList.add('open'));
+
+  const close = () => { modal.classList.remove('open'); setTimeout(() => modal.remove(), 200); };
+
+  qs('#confirm-cancel-btn', modal).addEventListener('click', close);
+  qs('.custom-modal-scrim', modal).addEventListener('click', close);
+
+  if (requireType) {
+    const input = qs('#confirm-type-input', modal);
+    const okBtn = qs('#confirm-ok-btn', modal);
+    input.addEventListener('input', () => {
+      okBtn.disabled = input.value !== requireType;
+    });
+    input.focus();
+  }
+
+  qs('#confirm-ok-btn', modal).addEventListener('click', () => {
+    close();
+    onConfirm();
+  });
 }
 
 init();
