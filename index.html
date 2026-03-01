@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,300&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- AUTH -->
+  <div id="page-auth" class="page">
+    <div class="auth-bg"><div class="auth-grid"></div></div>
+    <div class="auth-container">
+      <div class="auth-brand">
+        <svg class="brand-mark" width="40" height="40" viewBox="0 0 44 44" fill="none">
+          <path d="M8 22C8 12 15 5 24 5C33 5 38 12 36 20C34 28 24 27 22 34C20 41 24 46 31 44" stroke="#007BFF" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span class="brand-wordmark">Flow</span>
+      </div>
+      <p class="auth-tagline">Where ideas move.</p>
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="login">Sign in</button>
+        <button class="auth-tab" data-tab="register">Create account</button>
+      </div>
+      <form id="login-form" class="auth-form active" novalidate>
+        <div class="field-group">
+          <label class="field-label" for="login-email">Email</label>
+          <input class="field-input" type="email" id="login-email" placeholder="you@example.com" autocomplete="email" />
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="login-password">Password</label>
+          <input class="field-input" type="password" id="login-password" placeholder="••••••••" autocomplete="current-password" />
+        </div>
+        <div id="login-error" class="form-msg"></div>
+        <button type="submit" class="btn-primary" id="login-submit">Sign in</button>
+      </form>
+      <form id="register-form" class="auth-form" novalidate>
+        <div class="field-group">
+          <label class="field-label" for="reg-username">Username</label>
+          <div class="input-prefix-wrap">
+            <span class="input-prefix">@</span>
+            <input class="field-input prefixed" type="text" id="reg-username" placeholder="yourhandle" autocomplete="username" autocorrect="off" autocapitalize="none" spellcheck="false" maxlength="24" />
+          </div>
+          <span class="field-hint" id="username-hint"></span>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="reg-email">Email</label>
+          <input class="field-input" type="email" id="reg-email" placeholder="you@example.com" autocomplete="email" />
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="reg-password">Password</label>
+          <input class="field-input" type="password" id="reg-password" placeholder="Min 8 characters" autocomplete="new-password" />
+        </div>
+        <div id="reg-error" class="form-msg"></div>
+        <button type="submit" class="btn-primary" id="reg-submit">Create account</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="page-app" class="page hidden">
+
+    <!-- TOPBAR -->
+    <nav class="topbar" id="topbar">
+      <button class="topbar-back hidden" id="back-btn" aria-label="Back">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <a href="#/feed" class="topbar-brand brand-wordmark">Flow</a>
+      <div class="topbar-right">
+        <button class="icon-btn topbar-notif-btn" id="notif-btn" aria-label="Notifications">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span class="notif-badge hidden" id="notif-badge"></span>
+        </button>
+        <button class="icon-btn" id="new-post-btn" aria-label="New post">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="icon-btn" id="logout-btn" aria-label="Sign out">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    </nav>
+
+    <div class="app-body">
+
+      <!-- SIDEBAR -->
+      <aside class="sidebar" id="sidebar">
+        <a href="#/feed" class="sidebar-item" data-route="feed">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          <span>Feed</span>
+        </a>
+        <a href="#/explore" class="sidebar-item" data-route="explore">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span>Explore</span>
+        </a>
+        <a href="#/notifications" class="sidebar-item" data-route="notifications">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span>Notifications</span>
+          <span class="sidebar-badge hidden" id="sidebar-notif-badge"></span>
+        </a>
+        <a href="#/bookmarks" class="sidebar-item" data-route="bookmarks">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          <span>Bookmarks</span>
+        </a>
+        <a href="#/profile" class="sidebar-item" data-route="profile">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>Profile</span>
+        </a>
+        <a href="#/settings" class="sidebar-item" data-route="settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>Settings</span>
+        </a>
+      </aside>
+
+      <!-- MAIN -->
+      <main class="main-content" id="main-content">
+        <div id="view-feed"          class="route-view"></div>
+        <div id="view-explore"       class="route-view hidden"></div>
+        <div id="view-notifications" class="route-view hidden"></div>
+        <div id="view-bookmarks"     class="route-view hidden"></div>
+        <div id="view-profile"       class="route-view hidden"></div>
+        <div id="view-post"          class="route-view hidden"></div>
+        <div id="view-settings"      class="route-view hidden"></div>
+        <div id="view-loading"       class="route-view">
+          <div class="full-loader"><div class="spinner"></div></div>
+        </div>
+      </main>
+
+      <!-- RIGHT PANEL -->
+      <aside class="right-panel" id="right-panel">
+        <div class="trending-box">
+          <h3 class="rp-title">Trending</h3>
+          <div id="trending-list"><div class="spinner sm"></div></div>
+        </div>
+        <div class="who-to-follow">
+          <h3 class="rp-title">Who to follow</h3>
+          <div id="suggest-list"><div class="spinner sm"></div></div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- BOTTOM NAV (mobile) -->
+    <nav class="bottom-nav">
+      <a href="#/feed" class="bnav-item" data-route="feed">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      </a>
+      <a href="#/explore" class="bnav-item" data-route="explore">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </a>
+      <button class="bnav-compose" id="bnav-compose-btn">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <a href="#/notifications" class="bnav-item" data-route="notifications">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      </a>
+      <a href="#/profile" class="bnav-item" data-route="profile">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </a>
+    </nav>
+  </div>
+
+  <!-- COMPOSE MODAL -->
+  <div id="compose-modal" class="modal" role="dialog" aria-modal="true" aria-label="New post">
+    <div class="modal-scrim" id="modal-scrim"></div>
+    <div class="modal-sheet compose-sheet">
+      <div class="modal-handle"></div>
+      <div class="modal-head">
+        <h2 class="modal-title">New post</h2>
+        <button class="icon-btn" id="modal-close-btn" aria-label="Close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <!-- Post type tabs -->
+      <div class="compose-types" id="compose-types">
+        <button class="ctype-btn active" data-type="text">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>
+          Text
+        </button>
+        <button class="ctype-btn" data-type="image">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          Image
+        </button>
+        <button class="ctype-btn" data-type="video">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+          Video
+        </button>
+        <button class="ctype-btn" data-type="markdown">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+          Markdown
+        </button>
+        <button class="ctype-btn" data-type="poll">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          Poll
+        </button>
+      </div>
+
+      <form id="compose-form" novalidate>
+        <div class="compose-body">
+          <div id="compose-avatar" class="avatar size-md"></div>
+          <div class="compose-right">
+            <textarea id="compose-text" placeholder="What's flowing through your mind?" maxlength="2000" rows="4"></textarea>
+            <div class="compose-counter"><span id="compose-count">0</span>/2000</div>
+
+            <!-- Image upload -->
+            <div id="compose-image-area" class="compose-media-area hidden">
+              <label class="media-upload-zone" id="image-upload-zone">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                <span>Click or drag to add image</span>
+                <input type="file" id="compose-img-input" accept="image/jpeg,image/png,image/gif,image/webp" hidden />
+              </label>
+              <div id="compose-img-preview" class="compose-media-preview hidden">
+                <img id="compose-img-el" src="" alt="" />
+                <button type="button" class="media-remove-btn" id="img-remove-btn">×</button>
+              </div>
+            </div>
+
+            <!-- Video upload -->
+            <div id="compose-video-area" class="compose-media-area hidden">
+              <label class="media-upload-zone" id="video-upload-zone">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                <span>Click to upload video (max 50MB)</span>
+                <input type="file" id="compose-video-input" accept="video/mp4,video/webm,video/mov" hidden />
+              </label>
+              <div id="compose-video-preview" class="compose-media-preview hidden">
+                <video id="compose-video-el" controls></video>
+                <button type="button" class="media-remove-btn" id="video-remove-btn">×</button>
+              </div>
+            </div>
+
+            <!-- Markdown preview toggle -->
+            <div id="compose-md-toolbar" class="md-toolbar hidden">
+              <button type="button" class="md-tool" data-md="**bold**" title="Bold"><b>B</b></button>
+              <button type="button" class="md-tool" data-md="*italic*" title="Italic"><i>I</i></button>
+              <button type="button" class="md-tool" data-md="`code`" title="Code"><code>&lt;/&gt;</code></button>
+              <button type="button" class="md-tool" data-md="# " title="Heading">H</button>
+              <button type="button" class="md-tool" data-md="- " title="List">—</button>
+              <button type="button" class="md-tool" data-md="> " title="Quote">"</button>
+              <div class="md-sep"></div>
+              <button type="button" class="md-preview-toggle" id="md-preview-toggle">Preview</button>
+            </div>
+            <div id="md-preview-area" class="md-preview hidden"></div>
+
+            <!-- Poll options -->
+            <div id="compose-poll-area" class="compose-poll-area hidden">
+              <div id="poll-options-list">
+                <input class="field-input poll-option-input" type="text" placeholder="Option 1" maxlength="80" />
+                <input class="field-input poll-option-input" type="text" placeholder="Option 2" maxlength="80" />
+              </div>
+              <button type="button" class="btn-add-poll-option" id="add-poll-option-btn">+ Add option</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="compose-toolbar">
+          <div class="compose-toolbar-left">
+            <span class="compose-hint" id="compose-hint">Plain text</span>
+          </div>
+          <div id="compose-error" class="compose-err"></div>
+          <button type="submit" class="btn-post" id="compose-submit">Post</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- REPLY MODAL -->
+  <div id="reply-modal" class="modal" role="dialog" aria-modal="true">
+    <div class="modal-scrim" id="reply-scrim"></div>
+    <div class="modal-sheet">
+      <div class="modal-handle"></div>
+      <div class="modal-head">
+        <h2 class="modal-title">Reply</h2>
+        <button class="icon-btn" id="reply-close-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="reply-parent-preview" class="reply-parent"></div>
+      <form id="reply-form" novalidate>
+        <div class="compose-body">
+          <div id="reply-avatar" class="avatar size-md"></div>
+          <div class="compose-right">
+            <textarea id="reply-text" placeholder="Post your reply…" maxlength="500" rows="3"></textarea>
+          </div>
+        </div>
+        <div class="compose-toolbar">
+          <div id="reply-error" class="compose-err"></div>
+          <button type="submit" class="btn-post" id="reply-submit">Reply</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- QUOTE MODAL -->
+  <div id="quote-modal" class="modal" role="dialog" aria-modal="true">
+    <div class="modal-scrim" id="quote-scrim"></div>
+    <div class="modal-sheet">
+      <div class="modal-handle"></div>
+      <div class="modal-head">
+        <h2 class="modal-title">Quote post</h2>
+        <button class="icon-btn" id="quote-close-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <form id="quote-form" novalidate>
+        <div class="compose-body">
+          <div id="quote-avatar" class="avatar size-md"></div>
+          <div class="compose-right">
+            <textarea id="quote-text" placeholder="Add a comment…" maxlength="500" rows="3"></textarea>
+            <div id="quote-preview-card" class="quote-card"></div>
+          </div>
+        </div>
+        <div class="compose-toolbar">
+          <div id="quote-error" class="compose-err"></div>
+          <button type="submit" class="btn-post" id="quote-submit">Post</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- REACTIONS PICKER -->
+  <div id="reaction-picker" class="reaction-picker hidden">
+    <button class="rpick-btn" data-type="like">❤️</button>
+    <button class="rpick-btn" data-type="fire">🔥</button>
+    <button class="rpick-btn" data-type="clap">👏</button>
+    <button class="rpick-btn" data-type="laugh">😂</button>
+    <button class="rpick-btn" data-type="wow">😮</button>
+  </div>
+
+  <div id="toast-el" class="toast" role="status" aria-live="polite"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
