@@ -63,7 +63,8 @@ function strToColor(str) {
 }
 
 function isAdmin() {
-  return currentProfile?.username === 'flow', 'noreply';
+  const name = currentProfile?.username;
+  return name === 'flow' || name === 'noreply';
 }
 
 function isSystemAccount() {
