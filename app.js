@@ -15,6 +15,19 @@ let realtimeSub = null;
 let replyTargetPostId = null;
 let quoteTargetPost = null;
 
+function getOrCreateDeviceId() {
+  let deviceId = localStorage.getItem('flow_device_id');
+  if (!deviceId) {
+    deviceId = 'dev_' + Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem('flow_device_id', deviceId);
+  }
+  return deviceId;
+}
+
+function isShadowbanned(profile) {
+  return profile?.is_shadowbanned === true;
+}
+
 const icons = {
   like: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
   fire: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.56 2.75c4.37 6.03 6.02 9.42 8.03 17.72m2.54-15.6c3.72 4.35 4.4 8.15 5.15 17.99M19.79 22.75c-1.25.75-9.36.75-10.61 0"/></svg>',
@@ -34,7 +47,7 @@ function esc(str) {
 
 function linkify(text) {
   return esc(text)
-    .replace(/#(\w+)/g, '<a href="#/explore/$1" class="tag-link">#$1</a>')
+    .replace(/#(\w+)/g, '<a href="#/explore/#$1" class="tag-link">#$1</a>')
     .replace(/@(\w+)/g, '<a href="#/profile/$1">@$1</a>');
 }
 
@@ -63,7 +76,7 @@ function strToColor(str) {
 }
 
 function isAdmin() {
-  return currentProfile?.username === 'flow';
+  return currentProfile?.username === 'flow' || currentProfile?.username === 'noreply';
 }
 
 function isSystemAccount() {
@@ -78,7 +91,7 @@ function badgesFor(profile) {
   if (!profile) return '';
   let b = '';
   if (profile.username === 'flow' || profile.verified)
-    b += `<img class="verified-badge" src="https://img.icons8.com/fluency/48/instagram-verification-badge.png" title="${profile.username === 'flow' ? 'Admin' : 'Verified'}" />`;
+    b += `<img class="verified-badge" src="https://img.icons8.com/fluency/96/instagram-verification-badge.png" title="${profile.username === 'flow' ? 'Admin' : 'Verified'}" />`;
   return b;
 }
 
@@ -111,6 +124,7 @@ function route() {
   const parts = hash.split('/').filter(Boolean);
   const page = parts[0] || 'feed';
   const sub  = parts[1] || '';
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
 
   if (page === 'login') {
     if (currentUser) {
@@ -150,7 +164,7 @@ function route() {
   qsa('.route-view').forEach(v => v.classList.add('hidden'));
 
   if (page === 'feed') { qs('#view-feed').classList.remove('hidden'); renderFeed(); }
-  else if (page === 'explore') { qs('#view-explore').classList.remove('hidden'); renderExplore(sub); }
+  else if (page === 'explore') { qs('#view-explore').classList.remove('hidden'); renderExplore(sub, params.get('tag')); }
   else if (page === 'notifications') {
     if (!requireAuth()) return;
     qs('#view-notifications').classList.remove('hidden'); renderNotifications();
@@ -548,14 +562,18 @@ function postCardHTML(post, quotedPost = null) {
             <span class="post-dot">·</span>
             <span class="post-time">${timeAgo(post.created_at)}</span>
             ${typeBadge}
-            ${isPinned ? '<span class="post-type-badge" style="color:var(--yellow)">📌</span>' : ''}
+            ${isPinned ? `<span class="post-type-badge" style="display: inline-flex; align-items: center;">
+              <img src="https://img.icons8.com/material-rounded/96/pin.png" 
+                  style="height: 14px; width: auto; filter: invert(1); margin-right: 4px;" 
+                    alt="pinned" />
+            </span>` : ''}
           </span>
         </div>
         <div style="display:flex;gap:4px">
-          ${canPin ? `<button class="delete-btn pin-btn" data-post-id="${post.id}" title="Pin/Unpin post" style="color:${post.is_pinned ? 'var(--yellow)' : 'var(--muted)'}">
+          ${canPin ? `<button class="action-btn pin-btn" data-post-id="${post.id}" title="Pin/Unpin post" style="color:${post.is_pinned ? 'var(--yellow)' : 'var(--muted)'}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4v7H4v2h10v7l5-8-5-8Z"/></svg>
           </button>` : ''}
-          ${canDelete ? `<button class="delete-btn" data-post-id="${post.id}" title="Delete post">
+          ${canDelete ? `<button class="action-btn delete-btn" data-post-id="${post.id}" title="Delete post">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
           </button>` : ''}
         </div>
@@ -582,9 +600,12 @@ function postCardHTML(post, quotedPost = null) {
         <button class="action-btn share-btn" data-post-id="${post.id}" title="Copy link">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
         </button>
-        <button class="action-btn quote-btn" data-post-id="${post.id}" title="Quote post" style="margin-left:auto">
+        <button class="action-btn quote-btn" data-post-id="${post.id}" title="Quote post">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/></svg>
         </button>
+        ${currentUser ? `<button class="action-btn report-btn" data-post-id="${post.id}" title="Report post" style="margin-left:auto">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v2m0 4v2m1.71-16.04l8.14 14.88c.04.06.07.14.07.22a2 2 0 0 1-2 2H4.16a2 2 0 0 1-2-2c0-.08.03-.16.07-.22l8.14-14.88a2 2 0 0 1 3.46 0z"/></svg>
+        </button>` : ''}
       </div>
     </article>`;
 }
@@ -598,6 +619,8 @@ function bindPostActions(ctx) {
   qsa('.share-btn', ctx).forEach(btn => btn.addEventListener('click', () => copyLink(btn.dataset.postId)));
   qsa('.reply-btn', ctx).forEach(btn => btn.addEventListener('click', () => { if (!requireAuth()) return; openReplyModal(btn.dataset.postId); }));
   qsa('.quote-btn', ctx).forEach(btn => btn.addEventListener('click', () => { if (!requireAuth()) return; openQuoteModal(btn.dataset.postId); }));
+  qsa('.report-btn', ctx).forEach(btn => btn.addEventListener('click', () => { if (!requireAuth()) return; showReportModal(btn.dataset.postId); }));
+  qsa('.pin-btn', ctx).forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); togglePin(btn.dataset.postId, btn); }));
   qsa('.delete-btn', ctx).forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); deletePost(btn.dataset.postId, btn); }));
   qsa('[data-goto]', ctx).forEach(el => el.addEventListener('click', () => { location.hash = el.dataset.goto; }));
   qsa('.post-username', ctx).forEach(el => {
@@ -608,6 +631,10 @@ function bindPostActions(ctx) {
 }
 
 async function toggleLike(postId, btn) {
+  if (currentProfile?.banned || currentProfile?.is_shadowbanned) {
+    showToast('You cannot perform this action at this time.', 'error');
+    return;
+  }
   const liked = btn.classList.contains('liked');
   const lc = btn.querySelector('.lc');
   btn.classList.toggle('liked', !liked);
@@ -646,6 +673,14 @@ async function toggleBookmark(postId, btn) {
 function copyLink(postId) {
   const url = `${location.origin}${location.pathname}#/post/${postId}`;
   navigator.clipboard.writeText(url).then(() => showToast('Link copied!'));
+}
+
+async function togglePin(postId, btn) {
+  const isPinned = btn.style.color === 'var(--yellow)';
+  const { error } = await sb.from('posts').update({ is_pinned: !isPinned }).eq('id', postId);
+  if (error) { showToast('Error: ' + error.message, 'error'); return; }
+  btn.style.color = isPinned ? 'var(--muted)' : 'var(--yellow)';
+  showToast(isPinned ? 'Post unpinned.' : 'Post pinned!');
 }
 
 async function deletePost(postId, btn) {
@@ -726,24 +761,26 @@ async function loadNotifCount() {
   }
 }
 
-async function renderExplore(sub) {
+async function renderExplore(sub, tagParam) {
   const view = qs('#view-explore');
+  const initialQuery = tagParam ? decodeURIComponent(tagParam) : (sub ? decodeURIComponent(sub) : '');
+  
   view.innerHTML = `
     <div class="view-header">
       <h1 class="view-title">Explore</h1>
       <div class="search-bar">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" id="explore-input" placeholder="Search users or #hashtags…" autocomplete="off" value="${esc(sub ? decodeURIComponent(sub) : '')}" />
+        <input type="text" id="explore-input" placeholder="Search users or #hashtags…" autocomplete="off" value="${esc(initialQuery)}" />
       </div>
     </div>
     <div id="explore-tabs" class="feed-tabs" style="border-bottom:1px solid var(--border)">
-      <button class="feed-tab active" data-etab="users">People</button>
-      <button class="feed-tab" data-etab="posts">Posts</button>
+      <button class="feed-tab ${tagParam ? '' : 'active'}" data-etab="users">People</button>
+      <button class="feed-tab ${tagParam ? 'active' : ''}" data-etab="posts">Posts</button>
       <button class="feed-tab" data-etab="groups">Groups</button>
     </div>
     <div id="explore-results"></div>`;
 
-  let etab = 'users';
+  let etab = tagParam ? 'posts' : 'users';
   const search = async () => {
     const q = qs('#explore-input').value.trim();
     const el = qs('#explore-results');
@@ -765,7 +802,7 @@ async function renderExplore(sub) {
 }
 
 async function searchUsers(q, el) {
-  let req = sb.from('profiles').select('id, username, avatar_url, bio').limit(30);
+  let req = sb.from('profiles').select('id, username, avatar_url, bio, verified').limit(30);
   if (currentUser) req = req.neq('id', currentUser.id);
   if (q) req = req.ilike('username', `%${q}%`);
   else req = req.order('created_at', { ascending: false });
@@ -783,7 +820,7 @@ async function searchUsers(q, el) {
     <div class="user-row" data-username="${esc(u.username)}">
       ${avatarEl(u, 'size-md')}
       <div class="user-row-info">
-        <div class="user-row-name">@${esc(u.username)}</div>
+        <div class="user-row-name">@${esc(u.username)} ${u.verified ? '<img class="verified-badge" src="https://img.icons8.com/fluency/96/instagram-verification-badge.png" style="width:14px;height:14px;margin-left:4px" />' : ''}</div>
         ${u.bio ? `<div class="user-row-bio">${esc(u.bio.slice(0,70))}</div>` : ''}
       </div>
       <button class="btn-follow ${fset.has(u.id)?'following':''}" data-uid="${u.id}">${fset.has(u.id)?'Following':'Follow'}</button>
@@ -968,9 +1005,9 @@ async function renderProfile(username) {
         </div>
       </div>
       <div class="profile-stats">
+        <div class="stat-item" id="followers-link" style="cursor:pointer"><span class="stat-num">${fc||0}</span><span class="stat-lbl">Followers</span></div>
+        <div class="stat-item" id="following-link" style="cursor:pointer"><span class="stat-num">${fg||0}</span><span class="stat-lbl">Following</span></div>
         <div class="stat-item"><span class="stat-num">${(posts||[]).length}</span><span class="stat-lbl">Posts</span></div>
-        <div class="stat-item" id="follower-stat" style="cursor:pointer"><span class="stat-num">${fc||0}</span><span class="stat-lbl">Followers</span></div>
-        <div class="stat-item"><span class="stat-num">${fg||0}</span><span class="stat-lbl">Following</span></div>
       </div>
     </div>
     <div id="profile-edit-area"></div>
@@ -987,6 +1024,16 @@ async function renderProfile(username) {
     </div>`;
 
   bindPostActions(qs('#profile-posts'));
+
+  qs('#followers-link')?.addEventListener('click', async () => {
+    const { data: followers } = await sb.from('follows').select('follower:profiles!follows_follower_id_fkey(id, username, avatar_url, verified)').eq('following_id', profile.id);
+    showUserListModal('Followers', followers?.map(f => f.follower).filter(Boolean) || []);
+  });
+
+  qs('#following-link')?.addEventListener('click', async () => {
+    const { data: following } = await sb.from('follows').select('following:profiles!follows_following_id_fkey(id, username, avatar_url, verified)').eq('follower_id', profile.id);
+    showUserListModal('Following', following?.map(f => f.following).filter(Boolean) || []);
+  });
 
   qsa('.profile-tab', view).forEach(t => t.addEventListener('click', async () => {
     qsa('.profile-tab', view).forEach(x => x.classList.remove('active'));
@@ -1585,6 +1632,10 @@ function setupCompose() {
 
   qs('#compose-form').addEventListener('submit', async e => {
     e.preventDefault();
+    if (currentProfile?.banned || currentProfile?.is_shadowbanned) {
+      showToast('You cannot create posts at this time.', 'error');
+      return;
+    }
     const content = qs('#compose-text').value.trim();
     const errEl   = qs('#compose-error');
     const btn     = qs('#compose-submit');
@@ -1709,8 +1760,12 @@ function setupReplyModal() {
 }
 
 async function openReplyModal(postId) {
+  const { data: post } = await sb.from('posts').select('user_id, content, profiles(username)').eq('id', postId).single();
+  if (post?.profiles?.username === 'noreply') {
+    showToast('You cannot reply to this account.', 'error');
+    return;
+  }
   replyTargetPostId = postId;
-  const { data: post } = await sb.from('posts').select('content, profiles(username)').eq('id', postId).single();
   if (post) {
     qs('#reply-parent-preview').innerHTML = `<strong>@${esc(post.profiles?.username)}</strong>: ${esc(post.content.slice(0, 100))}${post.content.length > 100 ? '…' : ''}`;
   }
@@ -1744,6 +1799,10 @@ function setupQuoteModal() {
 async function openQuoteModal(postId) {
   const { data: post } = await sb.from('posts').select('id, content, profiles(username)').eq('id', postId).single();
   if (!post) return;
+  if (post.profiles?.username === 'noreply') {
+    showToast('You cannot quote posts from this account.', 'error');
+    return;
+  }
   quoteTargetPost = post;
   qs('#quote-preview-card').innerHTML = `<div class="quote-meta">@${esc(post.profiles?.username)}</div><div class="quote-text">${esc(post.content.slice(0,120))}</div>`;
   setComposeAvatar();
@@ -1907,6 +1966,7 @@ async function initApp() {
 async function ensureProfile() {
   if (!currentUser) return;
   try {
+    const deviceId = getOrCreateDeviceId();
     let { data, error } = await sb.from('profiles').select('*').eq('id', currentUser.id).maybeSingle();
     if (error) throw error;
     if (!data) {
@@ -1919,12 +1979,16 @@ async function ensureProfile() {
         tries++;
         uname = base + tries;
       }
-      await sb.from('profiles').upsert({ id: currentUser.id, username: uname, display_name: uname, user_email: currentUser.email });
+      await sb.from('profiles').upsert({ id: currentUser.id, username: uname, display_name: uname, user_email: currentUser.email, device_id: deviceId });
       const { data: fresh } = await sb.from('profiles').select('*').eq('id', currentUser.id).single();
       data = fresh;
     } else if (!data.user_email) {
-      await sb.from('profiles').update({ user_email: currentUser.email }).eq('id', currentUser.id);
+      await sb.from('profiles').update({ user_email: currentUser.email, device_id: deviceId }).eq('id', currentUser.id);
       data.user_email = currentUser.email;
+      data.device_id = deviceId;
+    } else if (!data.device_id) {
+      await sb.from('profiles').update({ device_id: deviceId }).eq('id', currentUser.id);
+      data.device_id = deviceId;
     }
     currentProfile = data;
   } catch (e) {
@@ -2063,6 +2127,58 @@ function showInputModal({ title, message, inputPlaceholder = '', inputLabel = ''
   input.focus();
 }
 
+function showUserListModal(title, users) {
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:flex-end;z-index:100';
+  modal.innerHTML = `
+    <div class="modal-sheet" style="width:100%;max-width:600px;max-height:80vh;border-radius:16px 16px 0 0;background:var(--bg);padding:16px;display:flex;flex-direction:column;box-shadow:0 -4px 12px rgba(0,0,0,.2)">
+      <div class="modal-head">
+        <h3 class="modal-title">${esc(title)}</h3>
+        <button class="icon-btn" onclick="this.closest('.modal').remove()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div style="flex:1;overflow-y:auto;margin-top:12px">
+        ${users.length ? users.map(u => `
+          <div class="user-row" onclick="location.hash='#/profile/${esc(u.username)}'">
+            ${avatarEl(u, 'size-md')}
+            <div class="user-row-info">
+              <div class="user-row-name">@${esc(u.username)} ${u.verified ? '<img class="verified-badge" src="https://img.icons8.com/fluency/96/instagram-verification-badge.png" style="width:14px;height:14px;margin-left:4px" />' : ''}</div>
+            </div>
+          </div>
+        `).join('') : '<p style="text-align:center;color:var(--muted2);padding:24px;font-size:.88rem">No one yet</p>'}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  requestAnimationFrame(() => modal.classList.add('open'));
+  modal.addEventListener('click', e => {
+    if (e.target === modal) modal.remove();
+  });
+}
+
+function showReportModal(postId) {
+  showInputModal({
+    title: 'Report post',
+    message: 'Why are you reporting this post?',
+    inputPlaceholder: 'Spam, harassment, inappropriate content, etc.',
+    inputLabel: 'Reason',
+    confirmText: 'Report',
+    minLength: 10,
+    onConfirm: async (reason) => {
+      const { error } = await sb.from('reports').insert({
+        post_id: postId,
+        reported_by: currentUser.id,
+        reason: reason,
+        created_at: new Date().toISOString()
+      });
+      if (error) showToast('Error reporting post: ' + error.message, 'error');
+      else showToast('Report submitted. Thank you for helping keep Flow safe.');
+    }
+  });
+}
+
 init();
 let activeChatSub = null;
 
@@ -2115,36 +2231,77 @@ async function loadChatTab(tab) {
   el.innerHTML = '<div class="full-loader"><div class="spinner"></div></div>';
 
   const { data: convs } = await sb.from('conversations')
-    .select('id, user1_id, user2_id, streak_count, streak_active, last_message_at, messages(content, created_at, sender_id, message_type)')
+    .select('id, user1_id, user2_id, streak_count, streak_active, last_message_at, is_pinned, messages(content, created_at, sender_id, message_type, read_by)')
     .or(`user1_id.eq.${currentUser.id},user2_id.eq.${currentUser.id}`)
     .order('last_message_at', { ascending: false });
 
   if (!convs?.length) { el.innerHTML = '<p style="padding:24px;color:var(--muted2);text-align:center;font-size:.88rem">No conversations yet.<br>Visit someone\'s profile to start chatting.</p>'; return; }
 
-  const otherIds = convs.map(c => c.user1_id === currentUser.id ? c.user2_id : c.user1_id);
+  const sorted = convs.sort((a, b) => {
+    if (a.is_pinned && !b.is_pinned) return -1;
+    if (!a.is_pinned && b.is_pinned) return 1;
+    return new Date(b.last_message_at) - new Date(a.last_message_at);
+  });
+
+  const otherIds = sorted.map(c => c.user1_id === currentUser.id ? c.user2_id : c.user1_id);
   const { data: profiles } = await sb.from('profiles').select('id, username, display_name, avatar_url, verified').in('id', otherIds);
   const pmap = Object.fromEntries((profiles||[]).map(p => [p.id, p]));
 
-  el.innerHTML = convs.map(c => {
+  el.innerHTML = sorted.map(c => {
     const otherId = c.user1_id === currentUser.id ? c.user2_id : c.user1_id;
     const other = pmap[otherId] || { username: 'Unknown' };
     const lastMsg = c.messages?.sort((a,b) => new Date(b.created_at)-new Date(a.created_at))[0];
+    const unread = lastMsg && lastMsg.sender_id !== currentUser.id && !lastMsg.read_by?.includes(currentUser.id);
     const lastText = lastMsg ? (lastMsg.message_type === 'image' ? '📷 Photo' : lastMsg.content?.slice(0,40)) : 'No messages yet';
-    const streak = c.streak_active && c.streak_count > 0 ? `<span class="streak-badge">🔥 ${c.streak_count}</span>` : '';
+    const streak = c.streak_active && c.streak_count > 0 
+      ? `<span class="streak-badge" style="display: inline-flex; align-items: center; gap: 4px;">
+          <img src="https://img.icons8.com/emoji/96/fire.png" style="height: 24px; width: auto;" alt="streak" /> 
+          ${c.streak_count}
+        </span>` 
+      : '';
     return `
-      <div class="chat-row" data-conv-id="${c.id}">
+      <div class="chat-row ${c.is_pinned ? 'pinned' : ''} ${unread ? 'unread' : ''}" data-conv-id="${c.id}" style="${unread ? 'font-weight:600' : ''}">
         ${avatarEl(other, 'size-md')}
         <div class="chat-row-info">
           <div class="chat-row-top">
-            <span class="chat-row-name">${esc(other.display_name || other.username)}</span>${badgesFor(other)}${streak}
+            <span class="chat-row-name">
+              ${esc(other.display_name || other.username)}
+              ${c.is_pinned ? `<img src="https://img.icons8.com/material-rounded/96/pin.png" style="height: 12px; width: auto; filter: invert(1); margin-left: 4px; vertical-align: middle;" alt="pinned" />` : ''}
+          </span>${badgesFor(other)}${streak}
             <span class="chat-row-time">${lastMsg ? timeAgo(lastMsg.created_at) : ''}</span>
           </div>
-          <div class="chat-row-preview">${esc(lastText||'')}</div>
+          <div class="chat-row-preview">${unread ? '● ' : ''}${esc(lastText||'')}</div>
+        </div>
+        <div class="chat-row-actions" onclick="event.stopPropagation()" style="display:flex;gap:4px">
+              <button class="icon-btn pin-chat-btn" data-conv-id="${c.id}" 
+            style="padding:4px; width:30px; height:30px; display: inline-flex; align-items: center; justify-content: center;" 
+            title="${c.is_pinned ? 'Unpin' : 'Pin'} chat">
+        <img src="https://img.icons8.com/material-rounded/96/pin.png" 
+            style="width: 16px; height: 16px; filter: invert(1); ${c.is_pinned ? 'opacity: 1;' : 'opacity: 0.5;'}" 
+            alt="pin" />
+            </button>
+          <button class="icon-btn mute-chat-btn" data-conv-id="${c.id}" 
+            style="padding:4px; width:30px; height:30px; display: inline-flex; align-items: center; justify-content: center;" 
+            title="Mute notifications">
+        <img src="https://img.icons8.com/material-rounded/96/notification-off.png" 
+            style="width: 16px; height: 16px; filter: invert(1); opacity: 0.8;" 
+            alt="mute" />
+    </button>
         </div>
       </div>`;
   }).join('');
 
   qsa('.chat-row', el).forEach(r => r.addEventListener('click', () => location.hash = `#/chat/${r.dataset.convId}`));
+  qsa('.pin-chat-btn', el).forEach(b => b.addEventListener('click', async () => {
+    const convId = b.dataset.convId;
+    const { data: conv } = await sb.from('conversations').select('is_pinned').eq('id', convId).single();
+    await sb.from('conversations').update({ is_pinned: !conv.is_pinned }).eq('id', convId);
+    loadChatTab(tab);
+  }));
+  qsa('.mute-chat-btn', el).forEach(b => b.addEventListener('click', async () => {
+    const convId = b.dataset.convId;
+    showToast('Chat notifications muted.');
+  }));
 }
 
 async function renderChat(convId) {
@@ -2160,13 +2317,22 @@ async function renderChat(convId) {
   const { data: other } = await sb.from('profiles').select('id, username, display_name, avatar_url, verified').eq('id', otherId).single();
 
   const streakHtml = conv.streak_active && conv.streak_count > 0
-    ? `<span class="streak-badge large">🔥 ${conv.streak_count} day streak</span>`
+    ? `<span class="streak-badge large" style="display: inline-flex; align-items: center; gap: 6px;">
+        <img src="https://img.icons8.com/emoji/96/fire.png" style="height: 18px; width: auto;" alt="fire" /> 
+        ${conv.streak_count} day streak
+      </span>`
     : conv.streak_invited_by && conv.streak_invited_by !== currentUser.id && !conv.streak_accepted
-      ? `<button class="btn-sm btn-streak" id="accept-streak-btn">🔥 Accept streak invite</button>`
+      ? `<button class="btn-sm btn-streak" id="accept-streak-btn" style="display: inline-flex; align-items: center; gap: 5px;">
+          <img src="https://img.icons8.com/emoji/96/fire.png" style="height: 18px; width: auto;" /> Accept streak invite
+        </button>`
       : conv.streak_invited_by === currentUser.id && !conv.streak_accepted
-        ? `<span style="font-size:.75rem;color:var(--muted2)">🔥 Streak invite sent…</span>`
+        ? `<span style="font-size:.75rem; color:var(--muted2); display: inline-flex; align-items: center; gap: 5px;">
+            <img src="https://img.icons8.com/emoji/96/fire.png" style="height: 18px; width: auto; opacity: 1;" /> Streak invite sent…
+          </span>`
         : currentUser
-          ? `<button class="btn-sm btn-streak-invite" id="invite-streak-btn">🔥 Start streak</button>`
+          ? `<button class="btn-sm btn-streak-invite" id="invite-streak-btn" style="display: inline-flex; align-items: center; gap: 5px;">
+              <img src="https://img.icons8.com/emoji/96/fire.png" style="height: 18px; width: auto;" /> Start streak
+            </button>`
           : '';
 
   view.innerHTML = `
@@ -2175,9 +2341,10 @@ async function renderChat(convId) {
         ${avatarEl(other, 'size-sm')}
         <span class="chat-header-name">${esc(other?.display_name || other?.username)}</span>${badgesFor(other)}
       </a>
-      <div class="chat-header-actions">${streakHtml}</div>
+      <div class="chat-header-actions" id="chat-header-status">${streakHtml}</div>
     </div>
     <div class="chat-messages" id="chat-messages"><div class="full-loader"><div class="spinner"></div></div></div>
+    <div id="typing-indicator" style="padding:8px 16px;font-size:.75rem;color:var(--muted2);min-height:20px;display:none">Someone is typing...</div>
     <div class="chat-composer">
       <label class="chat-img-btn" title="Send photo">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -2227,6 +2394,16 @@ async function renderChat(convId) {
     const text = qs('#chat-input').value.trim();
     if (text) await sendMsg(text);
   });
+  
+  let typingTimeout;
+  qs('#chat-input').addEventListener('input', async () => {
+    clearTimeout(typingTimeout);
+    await sb.from('conversations').update({ typing_user: currentUser.id }).eq('id', convId);
+    typingTimeout = setTimeout(() => {
+      sb.from('conversations').update({ typing_user: null }).eq('id', convId);
+    }, 1500);
+  });
+  
   qs('#chat-input').addEventListener('keydown', async e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); const text = qs('#chat-input').value.trim(); if (text) await sendMsg(text); }
   });
@@ -2247,30 +2424,77 @@ async function renderChat(convId) {
   activeChatSub = sb.channel(`chat-${convId}`)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${convId}` },
       () => loadChatMessages(convId))
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversations', filter: `id=eq.${convId}` }, (payload) => {
+      const indicator = qs('#typing-indicator');
+      if (payload.new.typing_user && payload.new.typing_user !== currentUser.id) {
+        if (indicator) {
+          indicator.style.display = 'block';
+          clearTimeout(indicator._timeout);
+          indicator._timeout = setTimeout(() => { if (indicator) indicator.style.display = 'none'; }, 2000);
+        }
+      } else {
+        if (indicator) indicator.style.display = 'none';
+      }
+    })
     .subscribe();
+}
+
+async function deleteMessage(messageId, convId) {
+  await sb.from('messages').delete().eq('id', messageId);
+  await loadChatMessages(convId);
 }
 
 async function loadChatMessages(convId) {
   const el = qs('#chat-messages');
   if (!el) return;
   const { data: msgs } = await sb.from('messages')
-    .select('id, content, media_url, message_type, sender_id, created_at')
+    .select('id, content, media_url, message_type, sender_id, created_at, read_by')
     .eq('conversation_id', convId)
     .order('created_at', { ascending: true })
     .limit(100);
 
   if (!msgs?.length) { el.innerHTML = '<p style="text-align:center;padding:24px;color:var(--muted2);font-size:.82rem">Say hello 👋</p>'; return; }
 
+  const unreadMsgs = msgs.filter(m => m.sender_id !== currentUser.id && !m.read_by?.includes(currentUser.id));
+  if (unreadMsgs.length > 0) {
+    const msgIds = unreadMsgs.map(m => m.id);
+    await sb.from('messages').update({
+      read_by: unreadMsgs[0].read_by ? [...unreadMsgs[0].read_by, currentUser.id] : [currentUser.id]
+    }).in('id', msgIds);
+  }
+
   el.innerHTML = msgs.map(m => {
     const mine = m.sender_id === currentUser.id;
+
+    const iconStyle = 'height: 14px; width: auto; vertical-align: middle; margin-left: 4px; filter: invert(1);';
+
+    const singleTick = `<img src="https://img.icons8.com/ios-glyphs/30/checkmark--v1.png" style="${iconStyle}" alt="sent" />`;
+    const doubleTick = `<img src="https://img.icons8.com/ios-glyphs/30/double-tick--v1.png" style="${iconStyle}" alt="read" />`;
+
+    const readStatus = mine && m.read_by?.length > 0 ? doubleTick : mine ? singleTick : '';
+    
     const content = m.message_type === 'image'
       ? `<img src="${esc(m.media_url)}" class="chat-img-msg" loading="lazy" />`
       : `<span>${esc(m.content)}</span>`;
+      
+    const deleteBtn = mine ? `<button class="chat-msg-delete" data-msg-id="${m.id}" data-conv-id="${convId}" title="Delete" style="display:inline-flex;align-items:center;justify-content:center;background:none;border:none;padding:2px"><img src="https://img.icons8.com/material-rounded/96/trash.png" style="width:14px;height:14px;filter:invert(1);opacity:1" alt="delete"></button>` : '';
+    
     return `<div class="chat-bubble-wrap ${mine?'mine':'theirs'}">
       <div class="chat-bubble ${mine?'mine':'theirs'}">${content}</div>
-      <span class="bubble-time">${timeAgo(m.created_at)}</span>
+      <div class="chat-bubble-meta">
+        <span class="bubble-time">${timeAgo(m.created_at)} ${readStatus}</span>
+        ${deleteBtn}
+      </div>
     </div>`;
-  }).join('');
+}).join('');
+
+  qsa('.chat-msg-delete').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const msgId = btn.dataset.msgId;
+      const cId = btn.dataset.convId;
+      await deleteMessage(msgId, cId);
+    });
+  });
 
   el.scrollTop = el.scrollHeight;
 }
