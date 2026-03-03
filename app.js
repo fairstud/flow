@@ -722,7 +722,7 @@ let _postDetailId     = null;
 let _postDetailCount  = 0;
 
 
-const VAPID_PUBLIC_KEY = 'BAUSYd6D0Tqxzi1GoFbRF1jI4iMIxgTO_riLKYq1FqN7gNF0lmTkmhT9lEGw6Tdsen7ZlyvSQd-Yp3z5ISou7w0';
+const VAPID_PUBLIC_KEY = 'PASTE_YOUR_VAPID_PUBLIC_KEY_HERE';
 
 async function registerPush() {
   if (!currentUser) return;
@@ -732,8 +732,16 @@ async function registerPush() {
     const reg = await navigator.serviceWorker.register('/sw.js');
     await navigator.serviceWorker.ready;
 
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
+    const current = Notification.permission;
+
+    if (current === 'denied') return;
+
+    if (current === 'default') {
+      const already = localStorage.getItem('push_asked');
+      if (already === 'dismissed') return;
+      const granted = await showPushPrompt();
+      if (!granted) { localStorage.setItem('push_asked', 'dismissed'); return; }
+    }
 
     const existing = await reg.pushManager.getSubscription();
     const sub = existing || await reg.pushManager.subscribe({
@@ -746,7 +754,39 @@ async function registerPush() {
       subscription: sub.toJSON(),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id,endpoint' });
+
+    localStorage.setItem('push_asked', 'granted');
   } catch {}
+}
+
+function showPushPrompt() {
+  return new Promise(resolve => {
+    const box = document.createElement('div');
+    box.style.cssText = `position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px 20px;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,.4);max-width:320px;width:90%;display:flex;flex-direction:column;gap:12px`;
+    box.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:1.4rem">🔔</span>
+        <div>
+          <div style="font-weight:600;font-size:.9rem">Enable notifications</div>
+          <div style="font-size:.78rem;color:var(--muted2);margin-top:2px">Get notified about messages and activity</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button id="push-no" style="padding:7px 14px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:.82rem;cursor:pointer">Not now</button>
+        <button id="push-yes" style="padding:7px 14px;border-radius:8px;border:none;background:var(--blue);color:#fff;font-size:.82rem;font-weight:600;cursor:pointer">Allow</button>
+      </div>`;
+    document.body.appendChild(box);
+
+    box.querySelector('#push-yes').addEventListener('click', async () => {
+      box.remove();
+      const result = await Notification.requestPermission();
+      resolve(result === 'granted');
+    });
+    box.querySelector('#push-no').addEventListener('click', () => {
+      box.remove();
+      resolve(false);
+    });
+  });
 }
 
 function urlBase64ToUint8Array(base64String) {
@@ -2221,6 +2261,7 @@ async function initApp() {
     loadNotifCount();
     loadRightPanel();
     subscribeRealtime();
+    setTimeout(registerPush, 3000);
   }
 
   sb.auth.onAuthStateChange(async (event, session) => {
