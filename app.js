@@ -163,7 +163,7 @@ function route() {
 
   qsa('.route-view').forEach(v => v.classList.add('hidden'));
 
-  if (page === 'feed') { qs('#view-feed').classList.remove('hidden'); renderFeed(); }
+  if (page === 'feed') { _rtViewedUserId = null; qs('#rt-banner')?.remove(); _rtBannerShown = false; _feedNewestTs = null; qs('#view-feed').classList.remove('hidden'); renderFeed(); }
   else if (page === 'explore') { qs('#view-explore').classList.remove('hidden'); renderExplore(sub, params.get('tag')); }
   else if (page === 'notifications') {
     if (!requireAuth()) return;
@@ -400,36 +400,33 @@ function setupLoginPage() {
 
 async function renderFeed() {
   const view = qs('#view-feed');
-  if (view.dataset.loaded === 'true') return;
-
-  view.innerHTML = `
-    <div class="view-header">
-      <h1 class="view-title">Feed</h1>
-      <div class="feed-tabs">
-        <button class="feed-tab active" data-tab="for-you">For you</button>
-        <button class="feed-tab" data-tab="following">Following</button>
+  if (!view.dataset.loaded) {
+    view.innerHTML = `
+      <div class="view-header">
+        <h1 class="view-title">Feed</h1>
+        <div class="feed-tabs">
+          <button class="feed-tab active" data-tab="for-you">For you</button>
+          <button class="feed-tab" data-tab="following">Following</button>
+        </div>
+        <button class="icon-btn feed-refresh-btn" id="feed-refresh-btn" title="Refresh feed">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
       </div>
-      <button class="icon-btn feed-refresh-btn" id="feed-refresh-btn" title="Refresh feed">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-      </button>
-    </div>
-    <div class="post-list" id="feed-posts"><div class="full-loader"><div class="spinner"></div></div></div>`;
-
-  qsa('.feed-tab', view).forEach(t => {
-    t.addEventListener('click', () => {
-      qsa('.feed-tab', view).forEach(x => x.classList.remove('active'));
-      t.classList.add('active');
-      loadFeedPosts(t.dataset.tab);
+      <div class="post-list" id="feed-posts"><div class="full-loader"><div class="spinner"></div></div></div>`;
+    view.dataset.loaded = '1';
+    qsa('.feed-tab', view).forEach(t => {
+      t.addEventListener('click', () => {
+        qsa('.feed-tab', view).forEach(x => x.classList.remove('active'));
+        t.classList.add('active');
+        loadFeedPosts(t.dataset.tab);
+      });
     });
-  });
-
-  qs('#feed-refresh-btn')?.addEventListener('click', () => {
-    const activeTab = qs('.feed-tab.active', view)?.dataset.tab || 'for-you';
-    loadFeedPosts(activeTab);
-  });
-
-  await loadFeedPosts('for-you');
-  view.dataset.loaded = 'true';
+    qs('#feed-refresh-btn')?.addEventListener('click', () => {
+      loadFeedPosts(qs('.feed-tab.active', view)?.dataset.tab || 'for-you');
+    });
+  }
+  const activeTab = qs('.feed-tab.active', view)?.dataset.tab || 'for-you';
+  await loadFeedPosts(activeTab);
 }
 
 function scorePost(post, followingIds = [], seenIds = new Set()) {
@@ -715,35 +712,321 @@ async function sendNotification(postId, type) {
   } catch (_) {}
 }
 
+let _rtViewedUsername = null;
+let _rtViewedUserId   = null;
+let _rtBannerShown    = false;
+let _pollInterval     = null;
+let _feedNewestTs     = null;
+let _notifNewestTs    = null;
+let _postDetailId     = null;
+let _postDetailCount  = 0;
+
+
+const VAPID_PUBLIC_KEY = 'BAUSYd6D0Tqxzi1GoFbRF1jI4iMIxgTO_riLKYq1FqN7gNF0lmTkmhT9lEGw6Tdsen7ZlyvSQd-Yp3z5ISou7w0';
+
+async function registerPush() {
+  if (!currentUser) return;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return;
+
+    const existing = await reg.pushManager.getSubscription();
+    const sub = existing || await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+
+    await sb.from('push_subscriptions').upsert({
+      user_id: currentUser.id,
+      subscription: sub.toJSON(),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,endpoint' });
+  } catch {}
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
 function subscribeRealtime() {
   if (!currentUser || realtimeSub) return;
-  realtimeSub = sb.channel('rt-posts')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, () => {
-      const h = location.hash.replace(/^#\/?/,'');
-      if (!h || h === 'feed' || h.startsWith('feed')) {
-        const view = qs('#view-feed');
-        if (view) { view.dataset.loaded = ''; loadFeedPosts('for-you'); }
+
+  if (!qs('#rt-banner-style')) {
+    const s = document.createElement('style');
+    s.id = 'rt-banner-style';
+    s.textContent = `@keyframes rtSlideIn{from{opacity:0;transform:translateX(-50%) translateY(-10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`;
+    document.head.appendChild(s);
+  }
+
+  realtimeSub = sb.channel('rt-global')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'posts' }, (p) => {
+      const h = location.hash.replace(/^#\/?/, '');
+      if ((!h || h.startsWith('feed')) && p.new.user_id !== currentUser.id) rtShowBanner();
+      if (h.startsWith('profile/') && _rtViewedUserId && p.new.user_id === _rtViewedUserId) rtRefreshProfilePosts();
+    })
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'posts' }, (p) => {
+      if (!p.old?.id) return;
+      qsa(`[data-post-id="${p.old.id}"]`).forEach(el => {
+        const card = el.closest?.('.post-card') || el;
+        card.style.transition = 'opacity .3s';
+        card.style.opacity = '0';
+        setTimeout(() => card.remove(), 300);
+      });
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'reactions' }, (p) => {
+      if (p.new.user_id !== currentUser.id) rtDeltaLike(p.new.post_id, +1);
+    })
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'reactions' }, (p) => {
+      if (p.old?.post_id && p.old.user_id !== currentUser.id) rtDeltaLike(p.old.post_id, -1);
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'reposts' }, (p) => {
+      if (p.new.user_id !== currentUser.id) rtDeltaRepost(p.new.post_id, +1);
+    })
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'reposts' }, (p) => {
+      if (p.old?.post_id && p.old.user_id !== currentUser.id) rtDeltaRepost(p.old.post_id, -1);
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, async (p) => {
+      if (p.new.user_id !== currentUser.id) return;
+      loadNotifCount();
+      const h = location.hash.replace(/^#\/?/, '');
+      if (h === 'notifications') await rtPrependNotif(p.new);
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments' }, async (p) => {
+      if (p.new.user_id === currentUser.id) return;
+      const h = location.hash.replace(/^#\/?/, '');
+      if (h.startsWith('post/') && String(p.new.post_id) === h.replace('post/', '')) await rtAppendComment(p.new);
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversations' }, () => {
+      const h = location.hash.replace(/^#\/?/, '');
+      if (h === 'chats' || h.startsWith('chats')) loadChatTab('dms');
+      rtChatBadge();
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (p) => {
+      const h = location.hash.replace(/^#\/?/, '');
+      if (h.startsWith('chat/') && String(p.new.conversation_id) === h.replace('chat/', '')) {
+        loadChatMessages(h.replace('chat/', ''));
+        return;
       }
-    })
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload) => {
-      if (payload.new.user_id === currentUser.id) loadNotifCount();
-    })
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversations' }, (payload) => {
-      const h = location.hash.replace(/^#\/?/,'');
-      if (h.startsWith('chats') || h === 'messages') {
-        loadChatTab('dms');
-      }
-    })
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
-      const h = location.hash.replace(/^#\/?/,'');
-      if (h.startsWith('chat/')) {
-        const convId = h.replace('chat/', '');
-        if (String(payload.new.conversation_id) === String(convId)) {
-          loadChatMessages(convId);
-        }
+      if (p.new.sender_id !== currentUser.id) {
+        rtChatBadge();
+        if (h === 'chats' || h.startsWith('chats')) loadChatTab('dms');
       }
     })
     .subscribe();
+
+  startPolling();
+}
+
+function startPolling() {
+  if (_pollInterval) clearInterval(_pollInterval);
+  _pollInterval = setInterval(pollTick, 7000);
+}
+
+async function pollTick() {
+  if (!currentUser || document.hidden) return;
+  const h = location.hash.replace(/^#\/?/, '');
+
+  if (!h || h.startsWith('feed')) {
+    const tab = qs('.feed-tab.active')?.dataset?.tab || 'for-you';
+    const { data } = await sb.from('posts').select('created_at').is('reply_to', null).order('created_at', { ascending: false }).limit(1);
+    const newest = data?.[0]?.created_at;
+    if (!_feedNewestTs) {
+      _feedNewestTs = newest;
+    } else if (newest && newest > _feedNewestTs) {
+      _feedNewestTs = newest;
+      const atTop = window.scrollY < 200;
+      if (atTop) {
+        loadFeedPosts(tab);
+      } else {
+        rtShowBanner();
+      }
+    }
+    loadNotifCount();
+    rtChatBadge();
+  }
+
+  if (h === 'notifications') {
+    const { data } = await sb.from('notifications').select('created_at').eq('user_id', currentUser.id).order('created_at', { ascending: false }).limit(1);
+    const newest = data?.[0]?.created_at;
+    if (!_notifNewestTs) { _notifNewestTs = newest; }
+    else if (newest && newest > _notifNewestTs) {
+      _notifNewestTs = newest;
+      renderNotifications();
+    }
+    loadNotifCount();
+  }
+
+  if (h.startsWith('post/')) {
+    const postId = h.replace('post/', '');
+    const { count } = await sb.from('comments').select('*', { count: 'exact', head: true }).eq('post_id', postId);
+    if (_postDetailId !== postId) { _postDetailId = postId; _postDetailCount = count || 0; }
+    else if ((count || 0) > _postDetailCount) {
+      _postDetailCount = count || 0;
+      await pollAppendNewComments(postId);
+    }
+  }
+
+  if (h === 'chats' || h.startsWith('chats')) {
+    loadChatTab('dms');
+    rtChatBadge();
+  }
+
+  if (h.startsWith('profile/') && _rtViewedUserId) {
+    rtRefreshProfilePosts();
+  }
+}
+
+async function pollAppendNewComments(postId) {
+  const existing = new Set(qsa('[data-comment-id]').map(el => el.dataset.commentId));
+  const { data } = await sb.from('comments').select('*, profiles(username, avatar_url)').eq('post_id', postId).order('created_at', { ascending: true });
+  if (!data) return;
+  const list = qs('#replies-list');
+  if (!list) return;
+  const empty = list.querySelector('.empty-state');
+  data.forEach(c => {
+    if (existing.has(String(c.id))) return;
+    if (empty) empty.remove();
+    const div = document.createElement('div');
+    div.className = 'reply-card';
+    div.dataset.commentId = c.id;
+    div.innerHTML = `
+      ${avatarEl(c.profiles, 'size-sm')}
+      <div class="reply-card-right">
+        <div class="reply-meta">
+          <a href="#/profile/${esc(c.profiles?.username)}" class="reply-username">@${esc(c.profiles?.username)}</a>
+          <span class="reply-time">${timeAgo(c.created_at)}</span>
+          ${(currentUser && c.user_id === currentUser.id) ? `<button class="reply-delete" data-cid="${c.id}">Delete</button>` : ''}
+        </div>
+        <div class="reply-text">${esc(c.content)}</div>
+      </div>`;
+    div.style.animation = 'rtSlideIn .2s ease both';
+    div.querySelector('.reply-delete')?.addEventListener('click', async () => {
+      await sb.from('comments').delete().eq('id', c.id).eq('user_id', currentUser.id);
+      div.remove();
+    });
+    list.appendChild(div);
+  });
+  list.scrollTop = list.scrollHeight;
+}
+
+function rtShowBanner() {
+  if (_rtBannerShown) return;
+  const feed = qs('#view-feed');
+  if (!feed || feed.classList.contains('hidden')) return;
+  _rtBannerShown = true;
+  qs('#rt-banner')?.remove();
+  const btn = document.createElement('button');
+  btn.id = 'rt-banner';
+  btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg> New posts`;
+  btn.style.cssText = `position:fixed;top:62px;left:50%;transform:translateX(-50%);background:var(--blue);color:#fff;border:none;border-radius:20px;padding:7px 16px;font-size:.8rem;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px;z-index:9999;box-shadow:0 4px 14px rgba(0,0,0,.4);white-space:nowrap;animation:rtSlideIn .25s cubic-bezier(.34,1.56,.64,1) both`;
+  document.body.appendChild(btn);
+  btn.addEventListener('click', () => {
+    btn.remove();
+    _rtBannerShown = false;
+    _feedNewestTs = null;
+    const tab = qs('.feed-tab.active', feed)?.dataset?.tab || 'for-you';
+    loadFeedPosts(tab);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
+async function rtRefreshProfilePosts() {
+  const list = qs('#profile-posts');
+  if (!list || !_rtViewedUserId) return;
+  const { data: posts } = await sb.from('posts')
+    .select('id, content, post_type, media_url, created_at, user_id, profiles(id, username, avatar_url), reactions(id, user_id, type), reposts(id, user_id), bookmarks(id, user_id)')
+    .eq('user_id', _rtViewedUserId).is('reply_to', null).order('created_at', { ascending: false }).limit(30);
+  if (!posts) return;
+  list.innerHTML = posts.length ? posts.map(p => postCardHTML(p)).join('') : emptyState('No posts yet.');
+  bindPostActions(list);
+}
+
+function rtDeltaLike(postId, delta) {
+  qsa(`[data-post-id="${postId}"] .lc`).forEach(el => {
+    el.textContent = Math.max(0, (parseInt(el.textContent) || 0) + delta) || '';
+    el.closest('.like-btn')?.animate([{ transform: 'scale(1.3)' }, { transform: 'scale(1)' }], { duration: 250 });
+  });
+}
+
+function rtDeltaRepost(postId, delta) {
+  qsa(`[data-post-id="${postId}"] .rpc`).forEach(el => {
+    el.textContent = Math.max(0, (parseInt(el.textContent) || 0) + delta) || '';
+  });
+}
+
+async function rtPrependNotif(notif) {
+  const list = qs('#notif-list');
+  if (!list) return;
+  list.querySelector('.empty-state')?.remove();
+  const { data: actor } = await sb.from('profiles').select('username, avatar_url').eq('id', notif.actor_id).single();
+  const msgs = { like: 'liked your post', fire: 'reacted to your post', follow: 'followed you', repost: 'reposted your post', comment: 'replied to your post', mention: 'mentioned you' };
+  const div = document.createElement('div');
+  div.className = 'notif-item unread';
+  div.dataset.postId = notif.post_id || '';
+  div.style.cssText = 'cursor:pointer;animation:rtSlideIn .2s ease both';
+  div.innerHTML = `
+    <div class="notif-icon" style="color:var(--blue);flex-shrink:0;width:20px;height:20px">${icons[notif.type] || ''}</div>
+    <div style="flex:1;min-width:0">
+      <div class="notif-text"><a href="#/profile/${esc(actor?.username)}" class="notif-user" onclick="event.stopPropagation()"><strong>@${esc(actor?.username)}</strong></a> ${msgs[notif.type] || notif.type}</div>
+      <div class="notif-time">just now</div>
+    </div>`;
+  div.addEventListener('click', () => { if (notif.post_id) location.hash = `#/post/${notif.post_id}`; });
+  list.prepend(div);
+}
+
+async function rtAppendComment(comment) {
+  const list = qs('#replies-list');
+  if (!list || qsa('[data-comment-id]').some(el => el.dataset.commentId === String(comment.id))) return;
+  list.querySelector('.empty-state')?.remove();
+  const { data: profile } = await sb.from('profiles').select('username, avatar_url').eq('id', comment.user_id).single();
+  const div = document.createElement('div');
+  div.className = 'reply-card';
+  div.dataset.commentId = comment.id;
+  div.style.animation = 'rtSlideIn .2s ease both';
+  div.innerHTML = `
+    ${avatarEl(profile, 'size-sm')}
+    <div class="reply-card-right">
+      <div class="reply-meta">
+        <a href="#/profile/${esc(profile?.username)}" class="reply-username">@${esc(profile?.username)}</a>
+        <span class="reply-time">just now</span>
+      </div>
+      <div class="reply-text">${esc(comment.content)}</div>
+    </div>`;
+  list.appendChild(div);
+  list.scrollTop = list.scrollHeight;
+}
+
+async function rtChatBadge() {
+  if (!currentUser) return;
+  try {
+    const { data: convs } = await sb.from('conversations')
+      .select('messages(sender_id, read_by)')
+      .or(`user1_id.eq.${currentUser.id},user2_id.eq.${currentUser.id}`);
+    let unread = 0;
+    (convs || []).forEach(c => (c.messages || []).forEach(m => {
+      if (m.sender_id !== currentUser.id && !m.read_by?.includes(currentUser.id)) unread++;
+    }));
+    let badge = qs('#chat-unread-badge');
+    if (!badge) {
+      const nav = qs('[data-route="chats"]');
+      if (nav) {
+        badge = document.createElement('span');
+        badge.id = 'chat-unread-badge';
+        badge.style.cssText = `position:absolute;top:2px;right:2px;background:var(--blue);color:#fff;border-radius:50%;width:8px;height:8px`;
+        nav.style.position = 'relative';
+        nav.appendChild(badge);
+      }
+    }
+    if (badge) badge.style.display = unread > 0 ? 'block' : 'none';
+  } catch {}
 }
 
 async function loadNotifCount() {
@@ -939,6 +1222,10 @@ async function renderProfile(username) {
 
   const { data: profile, error } = await sb.from('profiles').select('*').eq('username', username).single();
   if (error || !profile) { view.innerHTML = emptyState('User not found.'); return; }
+  // Track for realtime live updates
+  _rtViewedUsername = profile.username;
+  _rtViewedUserId   = profile.id;
+
 
   const isOwn = currentUser ? profile.id === currentUser.id : false;
 
@@ -1673,7 +1960,7 @@ function setupCompose() {
       closeModal();
       showToast('Posted!');
       const view = qs('#view-feed');
-      if (view) { view.dataset.loaded = ''; }
+      if (view) { /* feed reloads on every visit */ }
       location.hash = '#/feed';
       renderFeed();
     } catch (err) {
@@ -1792,7 +2079,7 @@ function setupQuoteModal() {
     quoteTargetPost = null;
     showToast('Quoted!');
     const view = qs('#view-feed');
-    if (view) { view.dataset.loaded = ''; renderFeed(); }
+    if (view) { renderFeed(); }
   });
 }
 
@@ -1950,12 +2237,13 @@ async function initApp() {
       loadNotifCount();
       loadRightPanel();
       subscribeRealtime();
+      registerPush();
     } else if (event === 'TOKEN_REFRESHED') {
       if (session) currentUser = session.user;
     } else if (event === 'SIGNED_OUT') {
       currentUser = null;
       currentProfile = null;
-      if (realtimeSub) { realtimeSub.unsubscribe(); realtimeSub = null; }
+      if (realtimeSub) { realtimeSub.unsubscribe(); realtimeSub = null; } if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; } _feedNewestTs = null; _notifNewestTs = null;
       updateAuthUI();
       setComposeAvatar();
       location.hash = '#/feed';
