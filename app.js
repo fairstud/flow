@@ -3423,20 +3423,22 @@ async function openMemberManageMenu(btn, communityId, username) {
     .select('role, user_id').eq('community_id', communityId).eq('user_id', btn.dataset.uid).single();
   if (!mem) return;
 
-  const myRole = btn.dataset.role;
+  const targetRole = mem.role;
   const menu = document.createElement('div');
   menu.id = 'member-manage-menu';
   menu.style.cssText = `position:absolute;right:16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:4px;z-index:200;min-width:160px;box-shadow:0 8px 24px rgba(0,0,0,.3)`;
 
   const actions = [];
-  if (myRole !== 'admin') {
+  if (targetRole !== 'admin') {
     actions.push({ label: 'Make admin', fn: async () => {
-      await sb.from('community_members').update({ role: 'admin' }).eq('community_id', communityId).eq('user_id', mem.user_id);
+      const { error } = await sb.from('community_members').update({ role: 'admin' }).eq('community_id', communityId).eq('user_id', mem.user_id);
+      if (error) { showToast('Error: ' + error.message); return; }
       showToast(`@${username} is now an admin.`); menu.remove(); loadCommunityMembers(communityId, true);
     }});
   } else {
     actions.push({ label: 'Remove admin', fn: async () => {
-      await sb.from('community_members').update({ role: 'member' }).eq('community_id', communityId).eq('user_id', mem.user_id);
+      const { error } = await sb.from('community_members').update({ role: 'member' }).eq('community_id', communityId).eq('user_id', mem.user_id);
+      if (error) { showToast('Error: ' + error.message); return; }
       showToast(`@${username} is now a member.`); menu.remove(); loadCommunityMembers(communityId, true);
     }});
   }
@@ -3446,8 +3448,10 @@ async function openMemberManageMenu(btn, communityId, username) {
       message: `Remove <strong>@${esc(username)}</strong> from this community?`,
       confirmText: 'Remove',
       confirmClass: 'btn-danger',
+      danger: true,
       onConfirm: async () => {
-        await sb.from('community_members').delete().eq('community_id', communityId).eq('user_id', mem.user_id);
+        const { error } = await sb.from('community_members').delete().eq('community_id', communityId).eq('user_id', mem.user_id);
+        if (error) { showToast('Error: ' + error.message); return; }
         showToast(`@${username} removed.`); menu.remove(); loadCommunityMembers(communityId, true);
       }
     });
