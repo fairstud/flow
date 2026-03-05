@@ -722,39 +722,25 @@ let _postDetailId     = null;
 let _postDetailCount  = 0;
 
 
-const VAPID_PUBLIC_KEY = 'PASTE_YOUR_VAPID_PUBLIC_KEY_HERE';
+const ONESIGNAL_APP_ID = '39531d75-1479-49f2-80a0-d3e3f845e8da';
 
 async function registerPush() {
   if (!currentUser) return;
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (typeof OneSignal === 'undefined') return;
 
   try {
-    const reg = await navigator.serviceWorker.register('/sw.js');
-    await navigator.serviceWorker.ready;
+    const already = localStorage.getItem('push_asked');
+    if (already === 'dismissed') return;
 
-    const current = Notification.permission;
+    if (Notification.permission === 'denied') return;
 
-    if (current === 'denied') return;
-
-    if (current === 'default') {
-      const already = localStorage.getItem('push_asked');
-      if (already === 'dismissed') return;
+    if (Notification.permission === 'default') {
       const granted = await showPushPrompt();
       if (!granted) { localStorage.setItem('push_asked', 'dismissed'); return; }
+      await OneSignal.Notifications.requestPermission();
     }
 
-    const existing = await reg.pushManager.getSubscription();
-    const sub = existing || await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-    });
-
-    await sb.from('push_subscriptions').upsert({
-      user_id: currentUser.id,
-      subscription: sub.toJSON(),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id,endpoint' });
-
+    await OneSignal.login(currentUser.id);
     localStorage.setItem('push_asked', 'granted');
   } catch {}
 }
@@ -789,12 +775,7 @@ function showPushPrompt() {
   });
 }
 
-function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - base64String.length % 4) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const raw = atob(base64);
-  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
-}
+
 
 function subscribeRealtime() {
   if (!currentUser || realtimeSub) return;
