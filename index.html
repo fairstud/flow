@@ -9,7 +9,6 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Flow" />
-  <!-- Open Graph -->
   <meta property="og:title" content="Flow" />
   <meta property="og:description" content="Where ideas move." />
   <meta property="og:type" content="website" />
@@ -287,10 +286,6 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           Image
         </button>
-        <button class="ctype-btn" data-type="video">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-          Video
-        </button>
         <button class="ctype-btn" data-type="markdown">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
           Markdown
@@ -317,18 +312,6 @@
               <div id="compose-img-preview" class="compose-media-preview hidden">
                 <img id="compose-img-el" src="" alt="" />
                 <button type="button" class="media-remove-btn" id="img-remove-btn">×</button>
-              </div>
-            </div>
-
-            <div id="compose-video-area" class="compose-media-area hidden">
-              <label class="media-upload-zone" id="video-upload-zone">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-                <span>Click to upload video (max 50MB)</span>
-                <input type="file" id="compose-video-input" accept="video/mp4,video/webm,video/mov" hidden />
-              </label>
-              <div id="compose-video-preview" class="compose-media-preview hidden">
-                <video id="compose-video-el" controls></video>
-                <button type="button" class="media-remove-btn" id="video-remove-btn">×</button>
               </div>
             </div>
 
@@ -419,8 +402,17 @@
   <div id="toast-el" class="toast" role="status" aria-live="polite"></div>
 </div>
 
+<div id="notice-modal" class="notice-overlay">
+  <div class="notice-box">
+    <h2 id="notice-title" class="notice-title"></h2>
+    <p id="notice-body" class="notice-body"></p>
+    <button class="btn-primary notice-ok" onclick="closeNoticeModal()">OK</button>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+<script src="media-client.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

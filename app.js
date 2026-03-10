@@ -1,3 +1,23 @@
+function closeNoticeModal() {
+  document.getElementById('notice-modal').classList.remove('open');
+}
+
+async function initNoticeModal() {
+  const { data, error } = await sb
+    .from('site_notices')
+    .select('title, body')
+    .eq('active', true)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (error || !data || !data.title || !data.body) return;
+
+  document.getElementById('notice-title').textContent = data.title;
+  document.getElementById('notice-body').textContent  = data.body;
+  document.getElementById('notice-modal').classList.add('open');
+}
+
 const SUPABASE_URL = 'https://cdvxlzjroubzzfxzrhmp.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_FcDPxHEqaBJ1jLi_rB8o0A_upxm2XZv';
 
@@ -8,6 +28,8 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     detectSessionInUrl: true,
   }
 });
+
+initNoticeModal();
 
 let currentUser = null;
 let currentProfile = null;
@@ -76,16 +98,7 @@ function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
 }
 
-async function deleteStorageFile(publicUrl, bucket) {
-  if (!publicUrl) return;
-  try {
-    const marker = `/storage/v1/object/public/${bucket}/`;
-    const idx = publicUrl.indexOf(marker);
-    if (idx === -1) return;
-    const filePath = decodeURIComponent(publicUrl.slice(idx + marker.length).split('?')[0]);
-    await sb.storage.from(bucket).remove([filePath]);
-  } catch (_) {}
-}
+
 
 function showAvatarCropper(file, onCrop) {
   const existing = document.getElementById('avatar-cropper-modal');
@@ -636,7 +649,6 @@ function scorePost(post, followingIds = [], seenIds = new Set()) {
   let score = likes * 3 + reposts * 5 + bookmarks * 4 + comments * 2 + views * 0.1;
 
   if (post.post_type === 'image') score *= 1.4;
-  if (post.post_type === 'video') score *= 1.7;
 
   const decay = Math.pow(0.5, ageHours / 12);
   score *= decay;
@@ -659,6 +671,7 @@ async function loadFeedPosts(tab) {
     .select('id, content, post_type, media_url, media_type, created_at, user_id, view_count, quote_of, is_pinned, profiles(id, username, avatar_url, display_name, verified, banned), reactions(id, user_id, type), reposts(id, user_id), bookmarks(id, user_id)')
     .is('reply_to', null)
     .is('community_id', null)
+    .neq('post_type', 'video')
     .limit(80);
 
   if (tab === 'following') {
@@ -700,7 +713,23 @@ async function loadFeedPosts(tab) {
     if (qd) qd.forEach(q => quotedPosts[q.id] = q);
   }
 
-  list.innerHTML = ranked.map(p => postCardHTML(p, quotedPosts[p.quote_of])).join('');
+  const hydratedRanked = await TgMedia.hydrateMediaUrls(ranked, ['tg_media_file_id'], ['media_url']);
+  const allProfiles = hydratedRanked.map(p => p.profiles).filter(Boolean);
+  const hydratedProfiles = await TgMedia.hydrateMediaUrls(allProfiles, ['tg_avatar_file_id'], ['avatar_url']);
+  const profileMap = Object.fromEntries(hydratedProfiles.map(p => [p.id, p]));
+  let finalPosts = hydratedRanked.map(p => ({ ...p, profiles: profileMap[p.profiles?.id] || p.profiles }));
+
+  const pollPostIds = finalPosts.filter(p => p.post_type === 'poll').map(p => p.id);
+  if (pollPostIds.length) {
+    const { data: pollOpts } = await sb.from('poll_options').select('*, poll_votes(id, user_id)').in('post_id', pollPostIds);
+    if (pollOpts) {
+      const byPost = {};
+      pollOpts.forEach(o => { (byPost[o.post_id] = byPost[o.post_id] || []).push(o); });
+      finalPosts = finalPosts.map(p => p.post_type === 'poll' ? { ...p, poll_options: byPost[p.id] || [] } : p);
+    }
+  }
+
+  list.innerHTML = finalPosts.map(p => postCardHTML(p, quotedPosts[p.quote_of])).join('');
   bindPostActions(list);
 }
 
@@ -718,8 +747,25 @@ function postCardHTML(post, quotedPost = null, opts = {}) {
   let mediaHtml = '';
   if (post.post_type === 'image' && post.media_url) {
     mediaHtml = `<img class="post-img" src="${esc(post.media_url)}" alt="Post image" loading="lazy" />`;
-  } else if (post.post_type === 'video' && post.media_url) {
-    mediaHtml = `<video class="post-video" controls preload="none" src="${esc(post.media_url)}"></video>`;
+  }
+
+  let pollHtml = '';
+  if (post.post_type === 'poll' && Array.isArray(post.poll_options) && post.poll_options.length) {
+    const opts = post.poll_options;
+    const total = opts.reduce((a, o) => a + (o.poll_votes || []).length, 0);
+    const userVotedOptionId = currentUser
+      ? opts.find(o => (o.poll_votes || []).some(v => v.user_id === currentUser.id))?.id
+      : null;
+    pollHtml = `<div class="poll-wrap">` + opts.map(o => {
+      const votes = (o.poll_votes || []).length;
+      const pct = total ? Math.round((votes / total) * 100) : 0;
+      const voted = o.id === userVotedOptionId;
+      return `<div class="poll-bar-wrap ${voted ? 'voted' : ''}" data-option-id="${o.id}">
+        <div class="poll-bar-fill" style="width:${pct}%"></div>
+        <span class="poll-bar-label">${esc(o.label)}</span>
+        <span class="poll-bar-pct">${pct}%</span>
+      </div>`;
+    }).join('') + `<div class="poll-total">${total} vote${total !== 1 ? 's' : ''}</div></div>`;
   }
 
   let contentHtml = '';
@@ -828,6 +874,7 @@ function postCardHTML(post, quotedPost = null, opts = {}) {
       </div>
       ${contentHtml}
       ${mediaHtml}
+      ${pollHtml}
       ${quoteHtml}
       ${communityMode ? communityActions : regularActions}
     </article>`;
@@ -925,18 +972,13 @@ async function deletePost(postId, btn) {
     danger: true,
     onConfirm: async () => {
       btn.disabled = true;
-      const { data: postData } = await sb.from('posts').select('media_url, post_type').eq('id', postId).single();
-      let query = sb.from('posts').delete().eq('id', postId);
-      if (!isAdmin()) query = query.eq('user_id', currentUser.id);
-      const { error } = await query;
-      if (error) {
-        showToast('Error deleting post: ' + error.message, 'error');
-        btn.disabled = false;
-        return;
-      }
-      if (postData?.media_url) {
-        const bucket = postData.post_type === 'video' ? 'post-videos' : 'post-images';
-        await deleteStorageFile(postData.media_url, bucket);
+      try {
+        await TgMedia.deletePost(postId);
+      } catch (_) {
+        let q = sb.from('posts').delete().eq('id', postId);
+        if (!isAdmin()) q = q.eq('user_id', currentUser.id);
+        const { error } = await q;
+        if (error) { showToast('Error: ' + error.message, 'error'); btn.disabled = false; return; }
       }
       btn.closest('.post-card')?.remove();
       showToast('Deleted.');
@@ -1482,6 +1524,17 @@ async function renderProfile(username) {
   const isFollowing = !isOwn && !!followCheck?.data;
   const joinDate = new Date(profile.created_at).toLocaleDateString('en', { month: 'long', year: 'numeric' });
 
+  const [hydratedProfileArr] = await TgMedia.hydrateMediaUrls(
+    [profile],
+    ['tg_avatar_file_id', 'tg_banner_file_id'],
+    ['avatar_url', 'cover_url']
+  );
+  Object.assign(profile, hydratedProfileArr);
+
+  const hydratedPosts = posts
+    ? await TgMedia.hydrateMediaUrls(posts, ['tg_media_file_id'], ['media_url'])
+    : [];
+
   view.innerHTML = `
     <div class="profile-cover" id="profile-cover-el" style="${profile.cover_url ? `background-image:url('${esc(profile.cover_url)}');background-size:cover;background-position:center` : ''}">
       ${isOwn ? `<div class="profile-cover-actions">
@@ -1540,7 +1593,7 @@ async function renderProfile(username) {
       <div class="profile-stats">
         <div class="stat-item" id="followers-link" style="cursor:pointer"><span class="stat-num">${fc||0}</span><span class="stat-lbl">Followers</span></div>
         <div class="stat-item" id="following-link" style="cursor:pointer"><span class="stat-num">${fg||0}</span><span class="stat-lbl">Following</span></div>
-        <div class="stat-item"><span class="stat-num">${(posts||[]).length}</span><span class="stat-lbl">Posts</span></div>
+        <div class="stat-item"><span class="stat-num">${(hydratedPosts||[]).length}</span><span class="stat-lbl">Posts</span></div>
       </div>
     </div>
     <div id="profile-edit-area"></div>
@@ -1552,7 +1605,7 @@ async function renderProfile(username) {
     </div>
     <div id="profile-content-area">
       <div class="post-list" id="profile-posts">
-        ${(posts||[]).length ? posts.map(p=>postCardHTML(p)).join('') : emptyState('No posts yet.')}
+        ${(hydratedPosts||[]).length ? hydratedPosts.map(p=>postCardHTML(p)).join('') : emptyState('No posts yet.')}
       </div>
     </div>`;
 
@@ -1712,7 +1765,8 @@ async function loadProfileTab(tab, userId, isOwn) {
 
   if (tab === 'posts') {
     const { data } = await sb.from('posts').select('id, content, post_type, media_url, created_at, user_id, profiles(id, username, avatar_url, banned), reactions(id, user_id, type), reposts(id, user_id), bookmarks(id, user_id)').eq('user_id', userId).is('reply_to', null).order('created_at', { ascending: false }).limit(30);
-    area.innerHTML = `<div class="post-list">${data?.length ? data.map(p=>postCardHTML(p)).join('') : emptyState('No posts.')}</div>`;
+    const hydrated = data ? await TgMedia.hydrateMediaUrls(data, ['tg_media_file_id'], ['media_url']) : [];
+    area.innerHTML = `<div class="post-list">${hydrated.length ? hydrated.map(p=>postCardHTML(p)).join('') : emptyState('No posts.')}</div>`;
     bindPostActions(area);
   } else if (tab === 'replies') {
     const { data } = await sb.from('comments').select('*, profiles(username, avatar_url)').eq('user_id', userId).order('created_at', { ascending: false }).limit(30);
@@ -1725,14 +1779,17 @@ async function loadProfileTab(tab, userId, isOwn) {
         </div>
       </div>`).join('') : emptyState('No replies yet.')}</div>`;
   } else if (tab === 'media') {
-    const { data } = await sb.from('posts').select('id, media_url, post_type').eq('user_id', userId).not('media_url', 'is', null).order('created_at', { ascending: false }).limit(30);
-    area.innerHTML = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px">${data?.length ? data.map(p=>`
+    const { data } = await sb.from('posts').select('id, media_url, post_type').eq('user_id', userId).order('created_at', { ascending: false }).limit(30);
+    const withMedia = data ? await TgMedia.hydrateMediaUrls(data, ['tg_media_file_id'], ['media_url']) : [];
+    const mediaPosts = withMedia.filter(p => p.media_url);
+    area.innerHTML = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px">${mediaPosts.length ? mediaPosts.map(p=>`
       <div style="aspect-ratio:1;overflow:hidden;cursor:pointer" onclick="location.hash='#/post/${p.id}'">
         ${p.post_type==='video' ? `<video src="${esc(p.media_url)}" style="width:100%;height:100%;object-fit:cover"></video>` : `<img src="${esc(p.media_url)}" style="width:100%;height:100%;object-fit:cover" loading="lazy" />`}
       </div>`).join('') : '<p style="padding:24px;color:var(--muted2);font-size:.88rem">No media posts.</p>'}</div>`;
   } else if (tab === 'likes' && isOwn) {
     const { data } = await sb.from('reactions').select('post_id, posts(id, content, post_type, media_url, created_at, user_id, profiles(id, username, avatar_url, banned), reactions(id, user_id, type), reposts(id, user_id), bookmarks(id, user_id))').eq('user_id', userId).eq('type', 'like').order('created_at', { ascending: false }).limit(30);
-    const posts = data?.map(r=>r.posts).filter(Boolean)||[];
+    const raw = data?.map(r=>r.posts).filter(Boolean)||[];
+    const posts = await TgMedia.hydrateMediaUrls(raw, ['tg_media_file_id'], ['media_url']);
     area.innerHTML = `<div class="post-list">${posts.length ? posts.map(p=>postCardHTML(p)).join('') : emptyState('No liked posts.')}</div>`;
     bindPostActions(area);
   }
@@ -1801,34 +1858,32 @@ async function uploadAvatar(file, profile) {
   if (!file) return;
   showAvatarCropper(file, async (blob) => {
     showToast('Uploading…');
-    const oldUrl = currentProfile.avatar_url;
-    const path = `${currentUser.id}/avatar_${Date.now()}.jpg`;
-    const { error: upErr } = await sb.storage.from('avatars').upload(path, blob, { contentType: 'image/jpeg', cacheControl: '3600', upsert: true });
-    if (upErr) { showToast('Upload failed: ' + upErr.message, 'error'); return; }
-    const { data: { publicUrl } } = sb.storage.from('avatars').getPublicUrl(path);
-    await sb.from('profiles').update({ avatar_url: publicUrl }).eq('id', currentUser.id);
-    if (oldUrl) await deleteStorageFile(oldUrl, 'avatars');
-    currentProfile.avatar_url = publicUrl;
-    setComposeAvatar();
-    showToast('Avatar updated!');
-    renderProfile(profile.username);
+    try {
+      await TgMedia.uploadAvatar(blob);
+      const { data: fresh } = await sb.from('profiles').select('*').eq('id', currentUser.id).single();
+      currentProfile = fresh;
+      currentProfile.avatar_url = await TgMedia.getMediaUrl(fresh.tg_avatar_file_id);
+      setComposeAvatar();
+      showToast('Avatar updated!');
+      renderProfile(profile.username);
+    } catch (err) {
+      const isOffline = err.message?.includes('fetch') || err.message?.includes('NetworkError') || err.message?.includes('Failed to fetch');
+      showToast(isOffline ? 'Server offline — запусти node server.js' : 'Upload failed: ' + err.message, 'error');
+    }
   });
 }
 
 async function uploadCover(file, profile) {
   if (!file) return;
   showToast('Uploading cover…');
-  const oldUrl = currentProfile.cover_url;
-  const ext  = file.name.split('.').pop().toLowerCase();
-  const path = `${currentUser.id}/cover_${Date.now()}.${ext}`;
-  const { error: upErr } = await sb.storage.from('avatars').upload(path, file, { cacheControl: '3600', upsert: true });
-  if (upErr) { showToast('Cover upload failed: ' + upErr.message, 'error'); return; }
-  const { data: { publicUrl } } = sb.storage.from('avatars').getPublicUrl(path);
-  await sb.from('profiles').update({ cover_url: publicUrl }).eq('id', currentUser.id);
-  if (oldUrl) await deleteStorageFile(oldUrl, 'avatars');
-  currentProfile.cover_url = publicUrl;
-  showToast('Cover updated!');
-  renderProfile(profile.username);
+  try {
+    await TgMedia.uploadBanner(file);
+    showToast('Cover updated!');
+    renderProfile(profile.username);
+  } catch (err) {
+    const isOffline = err.message?.includes('fetch') || err.message?.includes('NetworkError') || err.message?.includes('Failed to fetch');
+    showToast(isOffline ? 'Server offline — запусти node server.js' : 'Cover upload failed: ' + err.message, 'error');
+  }
 }
 
 async function renderPostDetail(postId) {
@@ -1836,8 +1891,10 @@ async function renderPostDetail(postId) {
   view.innerHTML = `<div class="view-header"><h1 class="view-title">Post</h1></div><div class="full-loader"><div class="spinner"></div></div>`;
   if (!postId) { view.innerHTML += emptyState('Post not found.'); return; }
 
-  const { data: post } = await sb.from('posts').select('id, content, post_type, media_url, created_at, user_id, profiles(id, username, avatar_url, banned), reactions(id, user_id, type), reposts(id, user_id), bookmarks(id, user_id)').eq('id', postId).single();
-  if (!post) { view.innerHTML = emptyState('Post not found.'); return; }
+  const { data: rawPost } = await sb.from('posts').select('id, content, post_type, media_url, created_at, user_id, profiles(id, username, avatar_url, banned), reactions(id, user_id, type), reposts(id, user_id), bookmarks(id, user_id)').eq('id', postId).single();
+  if (!rawPost) { view.innerHTML = emptyState('Post not found.'); return; }
+
+  const [post] = await TgMedia.hydrateMediaUrls([rawPost], ['tg_media_file_id'], ['media_url']);
 
   const { data: replies } = await sb.from('comments').select('*, profiles(username, avatar_url)').eq('post_id', postId).order('created_at', { ascending: true });
 
@@ -2147,21 +2204,6 @@ function setupCompose() {
     qs('#image-upload-zone').classList.remove('hidden');
   });
 
-  qs('#compose-video-input').addEventListener('change', function() {
-    const file = this.files[0]; if (!file) return;
-    const url = URL.createObjectURL(file);
-    qs('#compose-video-el').src = url;
-    qs('#compose-video-preview').classList.remove('hidden');
-    qs('#video-upload-zone').classList.add('hidden');
-  });
-
-  qs('#video-remove-btn').addEventListener('click', () => {
-    qs('#compose-video-input').value = '';
-    qs('#compose-video-el').src = '';
-    qs('#compose-video-preview').classList.add('hidden');
-    qs('#video-upload-zone').classList.remove('hidden');
-  });
-
   qs('#md-preview-toggle')?.addEventListener('click', () => {
     const preview = qs('#md-preview-area');
     const text = qs('#compose-text').value;
@@ -2194,7 +2236,7 @@ function setupCompose() {
   qs('#add-poll-option-btn')?.addEventListener('click', () => {
     const list = qs('#poll-options-list');
     const count = qsa('.poll-option-input', list).length;
-    if (count >= 4) { showToast('Max 4 options.'); return; }
+    if (count >= 10) { showToast('Maximum 10 options allowed.', 'error'); return; }
     const inp = document.createElement('input');
     inp.className = 'field-input poll-option-input';
     inp.type = 'text';
@@ -2216,27 +2258,27 @@ function setupCompose() {
     if (!content && activeType !== 'poll') { errEl.textContent = 'Write something first.'; return; }
 
     setBtn(btn, true, 'Post');
-    let media_url = null;
 
     try {
-      if (activeType === 'image') {
-        const file = qs('#compose-img-input').files[0];
-        if (file) media_url = await uploadFile(file, 'post-images', 'posts');
-      } else if (activeType === 'video') {
-        const file = qs('#compose-video-input').files[0];
-        if (file) media_url = await uploadFile(file, 'post-images', 'posts');
-      }
-
       const { data: post, error } = await sb.from('posts').insert({
         user_id: currentUser.id,
         content: content || '📊 Poll',
         post_type: activeType,
-        media_url
+        media_url: null
       }).select().single();
 
       if (error) throw error;
 
-      if (activeType === 'poll' && post) {
+      if (activeType === 'image') {
+        const file = qs('#compose-img-input').files[0];
+        if (file) {
+          try { await uploadFile(file, post.id); }
+          catch (uploadErr) {
+            const offline = uploadErr.message?.includes('fetch') || uploadErr.message?.includes('Failed to fetch');
+            showToast(offline ? 'Пост створено, але сервер offline — запусти node server.js' : 'Пост створено, зображення не завантажилось: ' + uploadErr.message, 'error');
+          }
+        }
+      } else if (activeType === 'poll' && post) {
         const opts = qsa('.poll-option-input').map(i => i.value.trim()).filter(Boolean);
         if (opts.length >= 2) {
           await sb.from('poll_options').insert(opts.map(label => ({ post_id: post.id, label })));
@@ -2256,13 +2298,27 @@ function setupCompose() {
   });
 }
 
-async function uploadFile(file, bucket, folder) {
-  const ext  = file.name.split('.').pop().toLowerCase();
-  const path = `${folder}/${currentUser.id}/${Date.now()}.${ext}`;
-  const { error } = await sb.storage.from(bucket).upload(path, file, { cacheControl: '3600' });
-  if (error) throw error;
-  const { data: { publicUrl } } = sb.storage.from(bucket).getPublicUrl(path);
-  return publicUrl;
+async function uploadFile(file, bucketOrPostId, folder) {
+  if (folder) {
+    const ext  = file.name.split('.').pop().toLowerCase();
+    const path = `${folder}/${currentUser.id}/${Date.now()}.${ext}`;
+    const { error } = await sb.storage.from(bucketOrPostId).upload(path, file, { cacheControl: '3600' });
+    if (error) throw error;
+    const { data: { publicUrl } } = sb.storage.from(bucketOrPostId).getPublicUrl(path);
+    return publicUrl;
+  }
+  await TgMedia.uploadPostImage(file, bucketOrPostId);
+}
+
+async function deleteStorageFile(publicUrl, bucket) {
+  if (!publicUrl) return;
+  try {
+    const marker = `/storage/v1/object/public/${bucket}/`;
+    const idx = publicUrl.indexOf(marker);
+    if (idx === -1) return;
+    const filePath = decodeURIComponent(publicUrl.slice(idx + marker.length).split('?')[0]);
+    await sb.storage.from(bucket).remove([filePath]);
+  } catch (_) {}
 }
 
 function updateComposeType(type) {
@@ -2271,12 +2327,11 @@ function updateComposeType(type) {
   qs('#compose-poll-area').classList.add('hidden');
   qs('#md-preview-area').classList.add('hidden');
 
-  const hints = { text: 'Plain text', image: 'Image post', video: 'Video post', markdown: 'Markdown formatting', poll: 'Poll — add options below' };
+  const hints = { text: 'Plain text', image: 'Image post', markdown: 'Markdown formatting', poll: 'Poll — add options below' };
   qs('#compose-hint').textContent = hints[type] || '';
   qs('#compose-text').placeholder = type === 'poll' ? 'Ask a question…' : "What's flowing through your mind?";
 
   if (type === 'image') qs('#compose-image-area').classList.remove('hidden');
-  else if (type === 'video') qs('#compose-video-area').classList.remove('hidden');
   else if (type === 'markdown') qs('#compose-md-toolbar').classList.remove('hidden');
   else if (type === 'poll') qs('#compose-poll-area').classList.remove('hidden');
 }
@@ -2287,9 +2342,6 @@ function resetCompose() {
   qs('#compose-img-el').src = '';
   qs('#compose-img-preview').classList.add('hidden');
   qs('#image-upload-zone').classList.remove('hidden');
-  qs('#compose-video-el').src = '';
-  qs('#compose-video-preview').classList.add('hidden');
-  qs('#video-upload-zone').classList.remove('hidden');
   qs('#md-preview-area').classList.add('hidden');
   qs('#compose-error').textContent = '';
   qs('#compose-hint').textContent = 'Plain text';
@@ -3752,6 +3804,7 @@ async function loadCommunityPosts(communityId, communitySlug = '') {
     .select('id, content, post_type, media_url, media_type, created_at, user_id, view_count, quote_of, profiles(id, username, avatar_url, display_name, verified, banned), reactions(id, user_id, type), reposts(id, user_id), bookmarks(id, user_id)')
     .eq('community_id', communityId)
     .is('reply_to', null)
+    .neq('post_type', 'video')
     .order('created_at', { ascending: false })
     .limit(40);
 
@@ -3766,6 +3819,16 @@ async function loadCommunityPosts(communityId, communitySlug = '') {
   if (dc) dc.forEach(r => { discCounts[r.post_id] = (discCounts[r.post_id] || 0) + 1; });
   data.forEach(p => { p.discussion_count = discCounts[p.id] || 0; });
 
+  const pollPostIds = data.filter(p => p.post_type === 'poll').map(p => p.id);
+  if (pollPostIds.length) {
+    const { data: pollOpts } = await sb.from('poll_options').select('*, poll_votes(id, user_id)').in('post_id', pollPostIds);
+    if (pollOpts) {
+      const byPost = {};
+      pollOpts.forEach(o => { (byPost[o.post_id] = byPost[o.post_id] || []).push(o); });
+      data.forEach(p => { if (p.post_type === 'poll') p.poll_options = byPost[p.id] || []; });
+    }
+  }
+
   const quoteIds = data.filter(p => p.quote_of).map(p => p.quote_of);
   let quotedPosts = {};
   if (quoteIds.length) {
@@ -3773,7 +3836,9 @@ async function loadCommunityPosts(communityId, communitySlug = '') {
     if (qd) qd.forEach(q => quotedPosts[q.id] = q);
   }
 
-  el.innerHTML = data.map(p => postCardHTML(p, quotedPosts[p.quote_of], { communityMode: true, communitySlug })).join('');
+  const hydrated = await TgMedia.hydrateMediaUrls(data, ['tg_media_file_id'], ['media_url']);
+
+  el.innerHTML = hydrated.map(p => postCardHTML(p, quotedPosts[p.quote_of], { communityMode: true, communitySlug })).join('');
   bindPostActions(el);
 }
 
@@ -3982,13 +4047,13 @@ function showCommunityComposeModal(community) {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           Image
         </button>
-        <button class="ctype-btn" data-type="video">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-          Video
-        </button>
         <button class="ctype-btn" data-type="markdown">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
           Markdown
+        </button>
+        <button class="ctype-btn" data-type="poll">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          Poll
         </button>
       </div>
       <form id="cc-form" novalidate>
@@ -4008,16 +4073,12 @@ function showCommunityComposeModal(community) {
                 <button type="button" class="media-remove-btn" id="cc-img-remove">×</button>
               </div>
             </div>
-            <div id="cc-video-area" class="compose-media-area hidden">
-              <label class="media-upload-zone" id="cc-video-zone">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-                <span>Click to upload video (max 50MB)</span>
-                <input type="file" id="cc-video-input" accept="video/mp4,video/webm,video/mov" hidden />
-              </label>
-              <div id="cc-video-preview" class="compose-media-preview hidden">
-                <video id="cc-video-el" controls></video>
-                <button type="button" class="media-remove-btn" id="cc-video-remove">×</button>
+            <div id="cc-poll-area" class="compose-poll-area hidden">
+              <div id="cc-poll-options-list">
+                <input class="field-input poll-option-input" type="text" placeholder="Option 1" maxlength="80" />
+                <input class="field-input poll-option-input" type="text" placeholder="Option 2" maxlength="80" />
               </div>
+              <button type="button" class="btn-add-poll-option" id="cc-add-poll-option-btn">+ Add option</button>
             </div>
             <div id="cc-md-toolbar" class="md-toolbar hidden">
               <button type="button" class="md-tool" data-md="**bold**"><b>B</b></button>
@@ -4043,7 +4104,6 @@ function showCommunityComposeModal(community) {
 
   let currentType = 'text';
   let imageFile = null;
-  let videoFile = null;
 
   const close = () => { modal.classList.remove('open'); setTimeout(() => modal.remove(), 200); };
   qs('#cc-scrim', modal).addEventListener('click', close);
@@ -4054,12 +4114,12 @@ function showCommunityComposeModal(community) {
     currentType = btn.dataset.type;
     qsa('.ctype-btn', modal).forEach(b => b.classList.toggle('active', b === btn));
     qs('#cc-image-area', modal).classList.toggle('hidden', currentType !== 'image');
-    qs('#cc-video-area', modal).classList.toggle('hidden', currentType !== 'video');
+    qs('#cc-poll-area', modal).classList.toggle('hidden', currentType !== 'poll');
     qs('#cc-md-toolbar', modal).classList.toggle('hidden', currentType !== 'markdown');
     qs('#cc-md-preview', modal).classList.add('hidden');
     qs('#cc-text', modal).classList.remove('hidden');
     qs('#cc-md-preview-toggle', modal).textContent = 'Preview';
-    qs('#cc-text', modal).placeholder = currentType === 'markdown' ? 'Write markdown…' : 'What\'s on your mind?';
+    qs('#cc-text', modal).placeholder = currentType === 'poll' ? 'Ask a question…' : currentType === 'markdown' ? 'Write markdown…' : 'What\'s on your mind?';
   }));
 
   qs('#cc-img-input', modal).addEventListener('change', function() {
@@ -4077,20 +4137,16 @@ function showCommunityComposeModal(community) {
     qs('#cc-image-zone', modal).classList.remove('hidden');
   });
 
-  qs('#cc-video-input', modal).addEventListener('change', function() {
-    const file = this.files[0]; if (!file) return;
-    if (file.size > 50 * 1024 * 1024) { showToast('Video must be under 50MB', 'error'); return; }
-    videoFile = file;
-    const url = URL.createObjectURL(file);
-    qs('#cc-video-el', modal).src = url;
-    qs('#cc-video-preview', modal).classList.remove('hidden');
-    qs('#cc-video-zone', modal).classList.add('hidden');
-  });
-  qs('#cc-video-remove', modal).addEventListener('click', () => {
-    videoFile = null;
-    qs('#cc-video-el', modal).src = '';
-    qs('#cc-video-preview', modal).classList.add('hidden');
-    qs('#cc-video-zone', modal).classList.remove('hidden');
+  qs('#cc-add-poll-option-btn', modal).addEventListener('click', () => {
+    const list = qs('#cc-poll-options-list', modal);
+    const count = qsa('.poll-option-input', list).length;
+    if (count >= 10) { showToast('Maximum 10 options allowed.', 'error'); return; }
+    const inp = document.createElement('input');
+    inp.className = 'field-input poll-option-input';
+    inp.type = 'text';
+    inp.placeholder = `Option ${count + 1}`;
+    inp.maxLength = 80;
+    list.appendChild(inp);
   });
 
   qsa('.md-tool', modal).forEach(btn => btn.addEventListener('click', () => {
@@ -4120,27 +4176,29 @@ function showCommunityComposeModal(community) {
     const btn = qs('#cc-submit', modal);
     errEl.textContent = '';
     if (currentType === 'image' && !imageFile && !content) { errEl.textContent = 'Add an image or write something.'; return; }
-    if (currentType === 'video' && !videoFile) { errEl.textContent = 'Select a video first.'; return; }
-    if (currentType !== 'image' && currentType !== 'video' && !content) { errEl.textContent = 'Write something first.'; return; }
+    if (currentType === 'poll' && !content) { errEl.textContent = 'Write a question first.'; return; }
+    if (currentType !== 'image' && currentType !== 'poll' && !content) { errEl.textContent = 'Write something first.'; return; }
     setBtn(btn, true, 'Posting…');
     let media_url = null;
     if (currentType === 'image' && imageFile) {
       media_url = await uploadFile(imageFile, 'post-media', 'community-images');
       if (!media_url) { errEl.textContent = 'Image upload failed.'; setBtn(btn, false, 'Post'); return; }
     }
-    if (currentType === 'video' && videoFile) {
-      media_url = await uploadFile(videoFile, 'post-media', 'community-videos');
-      if (!media_url) { errEl.textContent = 'Video upload failed.'; setBtn(btn, false, 'Post'); return; }
-    }
-    const { error } = await sb.from('posts').insert({
+    const { data: post, error } = await sb.from('posts').insert({
       user_id: currentUser.id,
       content: content || '',
       post_type: currentType,
       media_url,
       community_id: community.id
-    });
+    }).select().single();
     setBtn(btn, false, 'Post');
     if (error) { errEl.textContent = error.message; return; }
+    if (currentType === 'poll' && post) {
+      const opts = qsa('.poll-option-input', modal).map(i => i.value.trim()).filter(Boolean);
+      if (opts.length >= 2) {
+        await sb.from('poll_options').insert(opts.map(label => ({ post_id: post.id, label })));
+      }
+    }
     close();
     showToast('Posted!');
     loadCommunityPosts(community.id, community.slug);
